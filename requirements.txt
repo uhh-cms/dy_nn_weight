@@ -1,0 +1,7 @@
+numpy
+awkward
+matplotlib
+zstandard
+uproot
+pyarrow
+correctionlib
