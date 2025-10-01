@@ -14,6 +14,9 @@ setup_dyw() {
     local orig="${PWD}"
     local micromamba_url="https://micro.mamba.pm/api/micromamba/linux-64/latest"
     local pyv="3.11"
+    local on_maxwell="$( [[ "$( hostname )" = max-*.desy.de ]] && echo "true" || echo "false" )"
+    local env_suffix="$( ${on_maxwell} && echo "_maxwell" || echo "" )"
+    ${on_maxwell} && echo "detected maxwell"
 
 
     #
@@ -24,7 +27,7 @@ setup_dyw() {
     export DYW_BASE="${this_dir}"
     export DYW_USER="$( whoami )"
     export DYW_DATA_BASE="${DYW_DATA_BASE:-/data/dust/user/${DYW_USER}/dyw_data}"
-    export DYW_SOFTWARE_BASE="${DYW_SOFTWARE_BASE:-${DYW_DATA_BASE}/software}"
+    export DYW_SOFTWARE_BASE="${DYW_SOFTWARE_BASE:-${DYW_DATA_BASE}/software_${env_suffix}}"
     export DYW_CONDA_BASE="${DYW_CONDA_BASE:-${DYW_SOFTWARE_BASE}/conda}"
     export DYW_VENV_BASE="${DYW_VENV_BASE:-${DYW_SOFTWARE_BASE}/venvs}"
 
