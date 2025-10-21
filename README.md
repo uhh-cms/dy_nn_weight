@@ -6,7 +6,7 @@ Corrective Drell-Yan Weight Derivation via Neutral Networks
 
 The setup is tailored towards DESY resources.
 
-Run the following command everyime you start a new session.
+Run the following command everytime you start a new session.
 The first invocation will install required software once.
 
 ```bash
