@@ -12,8 +12,3 @@ The first invocation will install required software once.
 ```bash
 source setup.sh
 ```
-
-```bash
-# test file
-/data/dust/user/riegerma/hh2bbtautau/dy_dnn_data/inputs
-```
