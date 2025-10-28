@@ -27,7 +27,7 @@ setup_dyw() {
     export DYW_BASE="${this_dir}"
     export DYW_USER="$( whoami )"
     export DYW_DATA_BASE="${DYW_DATA_BASE:-/data/dust/user/${DYW_USER}/dyw_data}"
-    export DYW_SOFTWARE_BASE="${DYW_SOFTWARE_BASE:-${DYW_DATA_BASE}/software_${env_suffix}}"
+    export DYW_SOFTWARE_BASE="${DYW_SOFTWARE_BASE:-${DYW_DATA_BASE}/software${env_suffix}}"
     export DYW_CONDA_BASE="${DYW_CONDA_BASE:-${DYW_SOFTWARE_BASE}/conda}"
     export DYW_VENV_BASE="${DYW_VENV_BASE:-${DYW_SOFTWARE_BASE}/venvs}"
 
