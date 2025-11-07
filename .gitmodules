@@ -1,0 +1,3 @@
+[submodule "modules/hbt"]
+	path = modules/hbt
+	url = ../hh2bbtautau.git
