@@ -17,10 +17,13 @@ year = "22pre_v14"
 
 # define file path
 config_inst = analysis_hbt.get_config(year)
-mypath = f"/data/dust/user/riegerma/hh2bbtautau/dy_dnn_data/inputs/{year}/"
+mypath = f"/data/dust/user/riegerma/hh2bbtautau/dy_dnn_data/inputs_prod20_vbf/{year}/"  # noqa: E501
 example_file = "w_lnu_1j_pt100to200_amcatnlo.parquet"
 fullpath = f"{mypath}{example_file}"
 example_array = ak.from_parquet(fullpath)
+
+variables = example_array.fields
+print(variables)
 
 # load DY weight corrections from json file
 dy_file = "/afs/desy.de/user/a/alvesand/public/dy_corrections.json.gz"
@@ -43,7 +46,7 @@ bb_phi = config_inst.variables.n.dibjet_phi
 hh_mass = config_inst.variables.n.hh_mass
 hh_pt = config_inst.variables.n.hh_pt
 hh_eta = config_inst.variables.n.hh_eta
-bb_phi = config_inst.variables.n.dibjet_phi
+hh_phi = config_inst.variables.n.hh_phi
 
 
 # get processes
@@ -100,8 +103,6 @@ def create_full_arrays(variable):
     dy_arr = _concat_to_numpy(dy_list)
     mc_arr = _concat_to_numpy(mc_list)
 
-    print(f"{variable} Arrays successfully created.")
-
     return data_arr, dy_arr, mc_arr
 
 
@@ -112,7 +113,7 @@ def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
     """
     data_channel_id, dy_channel_id, mc_channel_id = create_full_arrays("channel_id")  # noqa: E501
     data_ll_mass, dy_ll_mass, mc_ll_mass = create_full_arrays("ll_mass")  # noqa: E501
-    # data_met, dy_met, mc_met = create_full_arrays("met")
+    data_met, dy_met, mc_met = create_full_arrays("met_pt")
 
     # create masks
     data_id_mask = data_channel_id == desired_channel_id
@@ -123,14 +124,14 @@ def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
     dy_ll_mask = (dy_ll_mass >= 70) & (dy_ll_mass <= 110)
     mc_ll_mask = (mc_ll_mass >= 70) & (mc_ll_mass <= 110)
 
-    # data_met_mask = data_met < 45
-    # dy_met_mask = dy_met < 45
-    # mc_met_mask = mc_met < 45
+    data_met_mask = data_met < 45
+    dy_met_mask = dy_met < 45
+    mc_met_mask = mc_met < 45
 
     # combine masks
-    data_mask = data_id_mask & data_ll_mask  # & data_met_mask
-    dy_mask = dy_id_mask & dy_ll_mask  # & dy_met_mask
-    mc_mask = mc_id_mask & mc_ll_mask  # & mc_met_mask
+    data_mask = data_id_mask & data_ll_mask & data_met_mask
+    dy_mask = dy_id_mask & dy_ll_mask & dy_met_mask
+    mc_mask = mc_id_mask & mc_ll_mask & mc_met_mask
 
     return data_arr[data_mask], dy_arr[dy_mask], mc_arr[mc_mask]
 
@@ -156,11 +157,11 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
         print("--> Using updated DY event weights!")
         dy_weights = dy_weights
 
-    # filter arrays considering mumu channel id and DY region cuts
+    # filter arrays considering ee channel id and DY region cuts
     if filter_events:
-        data_arr, dy_arr, mc_arr = filter_events_by_channel(data_arr, dy_arr, mc_arr, 5)  # noqa: E501
+        data_arr, dy_arr, mc_arr = filter_events_by_channel(data_arr, dy_arr, mc_arr, 4)  # noqa: E501
         data_weights, dy_weights, mc_weights = filter_events_by_channel(  # noqa: E501
-            data_weights, dy_weights, mc_weights, 5
+            data_weights, dy_weights, mc_weights, 4
         )
 
     # update binning in histograms
@@ -183,6 +184,7 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
     )
 
     plt.savefig(f"plot_{file_version}.pdf")
+    print(f"Plot saved as plot_{file_version}.pdf")
 
 # --------------------------------------------------------------------------------------------------
 # MAIN SCRIPT
@@ -199,5 +201,21 @@ correctionlib_weight = weight * dy_event_weight
 # use original DY weights
 plot_function(ll_pt, "original_dy_weights")
 
+plot_function(ll_phi, "original_dy_weights_phi")
+plot_function(ll_eta, "original_dy_weights_eta")
+plot_function(ll_mass, "original_dy_weights_mass") 
+
+plot_function(bb_mass, "original_dy_weights_bbmass")   
+
 # use updated DY weights form json file
 plot_function(ll_pt, "correctionlib_weights", dy_weights=correctionlib_weight)
+
+plot_function(ll_phi, "correctionlib_weights_phi", dy_weights=correctionlib_weight)
+plot_function(ll_eta, "correctionlib_weights_eta", dy_weights=correctionlib_weight)
+plot_function(ll_mass, "correctionlib_weights_mass", dy_weights=correctionlib_weight)
+
+plot_function(bb_mass, "correctionlib_weights_bbmass", dy_weights=correctionlib_weight)
+
+
+
+
