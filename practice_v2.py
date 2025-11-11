@@ -17,7 +17,7 @@ year = "22pre_v14"
 
 # define file path
 config_inst = analysis_hbt.get_config(year)
-mypath = f"/data/dust/user/riegerma/hh2bbtautau/dy_dnn_data/inputs/{year}/"
+mypath = f"/data/dust/user/riegerma/hh2bbtautau/dy_dnn_data/inputs_prod20_vbf/{year}/"  # noqa: E501
 example_file = "w_lnu_1j_pt100to200_amcatnlo.parquet"
 fullpath = f"{mypath}{example_file}"
 example_array = ak.from_parquet(fullpath)
@@ -43,7 +43,10 @@ bb_phi = config_inst.variables.n.dibjet_phi
 hh_mass = config_inst.variables.n.hh_mass
 hh_pt = config_inst.variables.n.hh_pt
 hh_eta = config_inst.variables.n.hh_eta
-bb_phi = config_inst.variables.n.dibjet_phi
+hh_phi = config_inst.variables.n.hh_phi
+
+met_pt = config_inst.variables.n.met_pt
+met_phi = config_inst.variables.n.met_phi
 
 
 # get processes
@@ -112,7 +115,7 @@ def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
     """
     data_channel_id, dy_channel_id, mc_channel_id = create_full_arrays("channel_id")  # noqa: E501
     data_ll_mass, dy_ll_mass, mc_ll_mass = create_full_arrays("ll_mass")  # noqa: E501
-    # data_met, dy_met, mc_met = create_full_arrays("met")
+    data_met, dy_met, mc_met = create_full_arrays("met_pt")
 
     # create masks
     data_id_mask = data_channel_id == desired_channel_id
@@ -123,14 +126,14 @@ def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
     dy_ll_mask = (dy_ll_mass >= 70) & (dy_ll_mass <= 110)
     mc_ll_mask = (mc_ll_mass >= 70) & (mc_ll_mass <= 110)
 
-    # data_met_mask = data_met < 45
-    # dy_met_mask = dy_met < 45
-    # mc_met_mask = mc_met < 45
+    data_met_mask = data_met < 45
+    dy_met_mask = dy_met < 45
+    mc_met_mask = mc_met < 45
 
     # combine masks
-    data_mask = data_id_mask & data_ll_mask  # & data_met_mask
-    dy_mask = dy_id_mask & dy_ll_mask  # & dy_met_mask
-    mc_mask = mc_id_mask & mc_ll_mask  # & mc_met_mask
+    data_mask = data_id_mask & data_ll_mask & data_met_mask
+    dy_mask = dy_id_mask & dy_ll_mask & dy_met_mask
+    mc_mask = mc_id_mask & mc_ll_mask & mc_met_mask
 
     return data_arr[data_mask], dy_arr[dy_mask], mc_arr[mc_mask]
 
