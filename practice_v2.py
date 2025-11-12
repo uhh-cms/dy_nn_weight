@@ -19,12 +19,16 @@ year = "22pre_v14"
 # define file path
 config_inst = analysis_hbt.get_config(year)
 mypath = f"/data/dust/user/riegerma/hh2bbtautau/dy_dnn_data/inputs_prod20_vbf/{year}/"  # noqa: E501
+filelist = os.listdir(mypath)
+
 example_file = "w_lnu_1j_pt100to200_amcatnlo.parquet"
 fullpath = f"{mypath}{example_file}"
 example_array = ak.from_parquet(fullpath)
 
 variables = example_array.fields
 print(variables)
+
+
 
 # load DY weight corrections from json file
 dy_file = "/afs/desy.de/user/a/alvesand/public/dy_corrections.json.gz"
@@ -56,6 +60,54 @@ bkg_process = od.Process(name="mc", id="+", color1="#e76300", label="MC")
 dy_process = config_inst.get_process("dy")
 data_process = config_inst.get_process("data")
 
+
+# helper to safely concatenate awkward arrays and return a numpy array
+def _concat_to_numpy(lst):
+        if not lst:
+            return np.array([], dtype=float)
+        concatenated = ak.concatenate(lst)
+        try:
+            return ak.to_numpy(concatenated)
+        except Exception:
+            return np.asarray(ak.to_list(concatenated), dtype=float)
+        
+
+# create a full dictionary of the variables
+temp_storage = {
+    "data": {var: [] for var in variables},
+    "dy": {var: [] for var in variables},
+    "mc": {var: [] for var in variables},
+}
+
+for file in filelist:
+    full_ak_array = ak.from_parquet(f"{mypath}{file}")
+    for var in variables:
+        # extract the variable values from the file
+        if var != "event_weight" and not file.startswith("data"):
+            values = ak.from_parquet(f"{mypath}{file}")[var]
+        else:
+            # create event weights = 1 for data
+            ll_len = len(ak.from_parquet(f"{mypath}{file}")["ll_pt"])
+            values = ak.Array(np.ones(ll_len, dtype=float))
+
+        # append values to the correct list
+        if file.startswith("data"):
+            temp_storage["data"][var].append(values)
+        elif file.startswith("dy"):
+            temp_storage["dy"][var].append(values)
+        else:
+            temp_storage["mc"][var].append(values)
+
+variable_list = {}
+# fill the variable list with arrays for each variable
+for var in variables: 
+        data_arr = _concat_to_numpy(temp_storage["data"][var])
+        dy_arr = _concat_to_numpy(temp_storage["dy"][var])
+        mc_arr = _concat_to_numpy(temp_storage["mc"][var])
+        
+        variable_list[var] = [data_arr, dy_arr, mc_arr]
+print("Created dictionary with arrays for all variables.")
+
 # --------------------------------------------------------------------------------------------------
 # HELPER FUNCTIONS
 
@@ -64,7 +116,6 @@ def create_full_arrays(variable):
     """
     Function to read varaible column from all parquet files
     """
-    filelist = os.listdir(mypath)
 
     data_list = []
     dy_list = []
