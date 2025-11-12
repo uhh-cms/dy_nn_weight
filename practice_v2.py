@@ -12,6 +12,7 @@ from modules.hbt.modules.columnflow.columnflow.hist_util import create_hist_from
 # --------------------------------------------------------------------------------------------------
 # SETUP
 
+
 # choose which year to use
 year = "22pre_v14"
 
@@ -47,6 +48,7 @@ hh_mass = config_inst.variables.n.hh_mass
 hh_pt = config_inst.variables.n.hh_pt
 hh_eta = config_inst.variables.n.hh_eta
 hh_phi = config_inst.variables.n.hh_phi
+jet1_pt = config_inst.variables.n.jet1_pt
 
 
 # get processes
@@ -199,22 +201,14 @@ weight = correction_set.evaluate(era, dy_n_jet, dy_n_tag, dy_ll_pt, syst)
 correctionlib_weight = weight * dy_event_weight
 
 # use original DY weights
-plot_function(ll_pt, "original_dy_weights")
+plot_function(jet1_pt, "original_dy_weights_jet1_pt")
 
-plot_function(ll_phi, "original_dy_weights_phi")
-plot_function(ll_eta, "original_dy_weights_eta")
-plot_function(ll_mass, "original_dy_weights_mass") 
-
-plot_function(bb_mass, "original_dy_weights_bbmass")   
+plot_function(bb_pt, "original_dy_weights_bb_pt")   
 
 # use updated DY weights form json file
-plot_function(ll_pt, "correctionlib_weights", dy_weights=correctionlib_weight)
+plot_function(jet1_pt, "correctionlib_weights_jet1_pt", dy_weights=correctionlib_weight)
 
-plot_function(ll_phi, "correctionlib_weights_phi", dy_weights=correctionlib_weight)
-plot_function(ll_eta, "correctionlib_weights_eta", dy_weights=correctionlib_weight)
-plot_function(ll_mass, "correctionlib_weights_mass", dy_weights=correctionlib_weight)
-
-plot_function(bb_mass, "correctionlib_weights_bbmass", dy_weights=correctionlib_weight)
+plot_function(bb_pt, "correctionlib_weights_bb_pt", dy_weights=correctionlib_weight)
 
 
 
