@@ -84,10 +84,10 @@ for file in filelist:
     for var in variables:
         # extract the variable values from the file
         if var != "event_weight" and not file.startswith("data"):
-            values = ak.from_parquet(f"{mypath}{file}")[var]
+            values = full_ak_array[var]
         else:
             # create event weights = 1 for data
-            ll_len = len(ak.from_parquet(f"{mypath}{file}")["ll_pt"])
+            ll_len = len(full_ak_array["ll_pt"])
             values = ak.Array(np.ones(ll_len, dtype=float))
 
         # append values to the correct list
