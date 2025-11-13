@@ -112,51 +112,51 @@ print("Created dictionary with arrays for all variables.")
 # HELPER FUNCTIONS
 
 
-def create_full_arrays(variable):
-    """
-    Function to read varaible column from all parquet files
-    """
+# def create_full_arrays(variable):
+#     """
+#     Function to read varaible column from all parquet files
+#     """
 
-    data_list = []
-    dy_list = []
-    mc_list = []
+#     data_list = []
+#     dy_list = []
+#     mc_list = []
 
-    for file in filelist:
-        # extract the variable values from the file
-        if variable != "event_weight":
-            values = ak.from_parquet(f"{mypath}{file}")[variable]
-        # extract event weights
-        else:
-            if not file.startswith("data_"):
-                values = ak.from_parquet(f"{mypath}{file}")[variable]
-            else:
-                # create event weights = 1 for data
-                ll_len = len(ak.from_parquet(f"{mypath}{file}")["ll_pt"])
-                values = ak.Array(np.ones(ll_len, dtype=float))
+#     for file in filelist:
+#         # extract the variable values from the file
+#         if variable != "event_weight":
+#             values = ak.from_parquet(f"{mypath}{file}")[variable]
+#         # extract event weights
+#         else:
+#             if not file.startswith("data_"):
+#                 values = ak.from_parquet(f"{mypath}{file}")[variable]
+#             else:
+#                 # create event weights = 1 for data
+#                 ll_len = len(ak.from_parquet(f"{mypath}{file}")["ll_pt"])
+#                 values = ak.Array(np.ones(ll_len, dtype=float))
 
-        # append values to the correct list
-        if file.startswith("data"):
-            data_list.append(values)
-        elif file.startswith("dy"):
-            dy_list.append(values)
-        else:
-            mc_list.append(values)
+#         # append values to the correct list
+#         if file.startswith("data"):
+#             data_list.append(values)
+#         elif file.startswith("dy"):
+#             dy_list.append(values)
+#         else:
+#             mc_list.append(values)
 
-    # helper to safely concatenate awkward arrays and return a numpy array
-    def _concat_to_numpy(lst):
-        if not lst:
-            return np.array([], dtype=float)
-        concatenated = ak.concatenate(lst)
-        try:
-            return ak.to_numpy(concatenated)
-        except Exception:
-            return np.asarray(ak.to_list(concatenated), dtype=float)
+#     # helper to safely concatenate awkward arrays and return a numpy array
+#     def _concat_to_numpy(lst):
+#         if not lst:
+#             return np.array([], dtype=float)
+#         concatenated = ak.concatenate(lst)
+#         try:
+#             return ak.to_numpy(concatenated)
+#         except Exception:
+#             return np.asarray(ak.to_list(concatenated), dtype=float)
 
-    data_arr = _concat_to_numpy(data_list)
-    dy_arr = _concat_to_numpy(dy_list)
-    mc_arr = _concat_to_numpy(mc_list)
+#     data_arr = _concat_to_numpy(data_list)
+#     dy_arr = _concat_to_numpy(dy_list)
+#     mc_arr = _concat_to_numpy(mc_list)
 
-    return data_arr, dy_arr, mc_arr
+#     return data_arr, dy_arr, mc_arr
 
 
 def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
@@ -164,9 +164,9 @@ def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
     Function to filter the events by channel id and DY region cuts
     -> desired_channel_id: ee = 4, mumu = 5
     """
-    data_channel_id, dy_channel_id, mc_channel_id = create_full_arrays("channel_id")  # noqa: E501
-    data_ll_mass, dy_ll_mass, mc_ll_mass = create_full_arrays("ll_mass")  # noqa: E501
-    data_met, dy_met, mc_met = create_full_arrays("met_pt")
+    data_channel_id, dy_channel_id, mc_channel_id = variable_list["channel_id"]  # noqa: E501
+    data_ll_mass, dy_ll_mass, mc_ll_mass = variable_list["ll_mass"]  # noqa: E501
+    data_met, dy_met, mc_met = variable_list["met"]
 
     # create masks
     data_id_mask = data_channel_id == desired_channel_id
@@ -199,8 +199,8 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
     var_name = var_instance.name.replace("dilep", "ll").replace("dibjet", "bb")
 
     # get variable arrays and original event weights from files
-    data_arr, dy_arr, mc_arr = create_full_arrays(var_name)
-    data_weights, dy_weights_original, mc_weights = create_full_arrays("event_weight")  # noqa: E501
+    data_arr, dy_arr, mc_arr = variable_list[var_name]
+    data_weights, dy_weights_original, mc_weights = variable_list["event_weight"]  # noqa: E501
 
     # use original DY weights if none are provided
     if dy_weights is None:
@@ -244,10 +244,10 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
 
 
 # get DY weights from json
-_, dy_n_jet, _ = create_full_arrays("n_jet")
-_, dy_n_tag, _ = create_full_arrays("n_btag_pnet")
-_, dy_event_weight, _ = create_full_arrays("event_weight")
-_, dy_ll_pt, _ = create_full_arrays("ll_pt")
+_, dy_n_jet, _ = variable_list["n_jet"]
+_, dy_n_tag, _ = variable_list["n_btag_pnet"]
+_, dy_event_weight, _ = variable_list["event_weight"]
+_, dy_ll_pt, _ = variable_list["ll_pt"]
 weight = correction_set.evaluate(era, dy_n_jet, dy_n_tag, dy_ll_pt, syst)
 correctionlib_weight = weight * dy_event_weight
 
