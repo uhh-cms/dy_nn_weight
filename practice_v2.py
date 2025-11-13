@@ -166,7 +166,7 @@ def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
     """
     data_channel_id, dy_channel_id, mc_channel_id = variable_list["channel_id"]  # noqa: E501
     data_ll_mass, dy_ll_mass, mc_ll_mass = variable_list["ll_mass"]  # noqa: E501
-    data_met, dy_met, mc_met = variable_list["met"]
+    data_met, dy_met, mc_met = variable_list["met_pt"] 
 
     # create masks
     data_id_mask = data_channel_id == desired_channel_id
