@@ -83,7 +83,7 @@ for file in filelist:
     full_ak_array = ak.from_parquet(f"{mypath}{file}")
     for var in variables:
         # extract the variable values from the file
-        if var != "event_weight" and not file.startswith("data"):
+        if var != "event_weight" or not file.startswith("data"):
             values = full_ak_array[var]
         else:
             # create event weights = 1 for data
@@ -195,7 +195,7 @@ def hist_function(var_instance, data, weights):
     return h
 
 
-def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None, filter_events: bool = True):  # noqa: E501
+def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None, filter_events: bool = True, channel_id = None):  # noqa: E501
     var_name = var_instance.name.replace("dilep", "ll").replace("dibjet", "bb")
 
     # get variable arrays and original event weights from files
@@ -212,9 +212,9 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
 
     # filter arrays considering ee channel id and DY region cuts
     if filter_events:
-        data_arr, dy_arr, mc_arr = filter_events_by_channel(data_arr, dy_arr, mc_arr, 4)  # noqa: E501
+        data_arr, dy_arr, mc_arr = filter_events_by_channel(data_arr, dy_arr, mc_arr, channel_id)  # noqa: E501
         data_weights, dy_weights, mc_weights = filter_events_by_channel(  # noqa: E501
-            data_weights, dy_weights, mc_weights, 4
+            data_weights, dy_weights, mc_weights, channel_id
         )
 
     # update binning in histograms
@@ -252,14 +252,14 @@ weight = correction_set.evaluate(era, dy_n_jet, dy_n_tag, dy_ll_pt, syst)
 correctionlib_weight = weight * dy_event_weight
 
 # use original DY weights
-plot_function(jet1_pt, "original_dy_weights_jet1_pt")
+plot_function(jet1_pt, "original_dy_weights_jet1_pt", channel_id=4)
 
-plot_function(bb_pt, "original_dy_weights_bb_pt")   
+plot_function(bb_pt, "original_dy_weights_bb_pt", channel_id=4)   
 
 # use updated DY weights form json file
-plot_function(jet1_pt, "correctionlib_weights_jet1_pt", dy_weights=correctionlib_weight)
+plot_function(jet1_pt, "correctionlib_weights_jet1_pt", dy_weights=correctionlib_weight, channel_id=4)
 
-plot_function(bb_pt, "correctionlib_weights_bb_pt", dy_weights=correctionlib_weight)
+plot_function(bb_pt, "correctionlib_weights_bb_pt", dy_weights=correctionlib_weight, channel_id=4)
 
 
 
