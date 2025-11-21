@@ -14,16 +14,22 @@ from modules.hbt.modules.columnflow.columnflow.hist_util import create_hist_from
 
 # --------------------------------------------------------------------------------------------------
 # SETUP
-
 # choose which year to use
 year = "22pre_v14"
 
 # define file path
 config_inst = analysis_hbt.get_config(year)
 mypath = f"/data/dust/user/riegerma/hh2bbtautau/dy_dnn_data/inputs_prod20_vbf/{year}/"  # noqa: E501
+filelist = os.listdir(mypath)
+
 example_file = "w_lnu_1j_pt100to200_amcatnlo.parquet"
 fullpath = f"{mypath}{example_file}"
 example_array = ak.from_parquet(fullpath)
+
+variables = example_array.fields
+print(variables)
+
+
 
 # load DY weight corrections from json file
 dy_file = "/afs/desy.de/user/a/alvesand/public/dy_corrections.json.gz"
@@ -47,6 +53,7 @@ hh_mass = config_inst.variables.n.hh_mass
 hh_pt = config_inst.variables.n.hh_pt
 hh_eta = config_inst.variables.n.hh_eta
 hh_phi = config_inst.variables.n.hh_phi
+jet1_pt = config_inst.variables.n.jet1_pt
 
 met_pt = config_inst.variables.n.met_pt
 met_phi = config_inst.variables.n.met_phi
@@ -57,43 +64,9 @@ bkg_process = od.Process(name="mc", id="+", color1="#e76300", label="MC")
 dy_process = config_inst.get_process("dy")
 data_process = config_inst.get_process("data")
 
-# --------------------------------------------------------------------------------------------------
-# HELPER FUNCTIONS
 
-
-def create_full_arrays(variable):
-    """
-    Function to read varaible column from all parquet files
-    """
-    filelist = os.listdir(mypath)
-
-    data_list = []
-    dy_list = []
-    mc_list = []
-
-    for file in filelist:
-        # extract the variable values from the file
-        if variable != "event_weight":
-            values = ak.from_parquet(f"{mypath}{file}")[variable]
-        # extract event weights
-        else:
-            if not file.startswith("data_"):
-                values = ak.from_parquet(f"{mypath}{file}")[variable]
-            else:
-                # create event weights = 1 for data
-                ll_len = len(ak.from_parquet(f"{mypath}{file}")["ll_pt"])
-                values = ak.Array(np.ones(ll_len, dtype=float))
-
-        # append values to the correct list
-        if file.startswith("data"):
-            data_list.append(values)
-        elif file.startswith("dy"):
-            dy_list.append(values)
-        else:
-            mc_list.append(values)
-
-    # helper to safely concatenate awkward arrays and return a numpy array
-    def _concat_to_numpy(lst):
+# helper to safely concatenate awkward arrays and return a numpy array
+def _concat_to_numpy(lst):
         if not lst:
             return np.array([], dtype=float)
         concatenated = ak.concatenate(lst)
@@ -101,14 +74,47 @@ def create_full_arrays(variable):
             return ak.to_numpy(concatenated)
         except Exception:
             return np.asarray(ak.to_list(concatenated), dtype=float)
+        
 
-    data_arr = _concat_to_numpy(data_list)
-    dy_arr = _concat_to_numpy(dy_list)
-    mc_arr = _concat_to_numpy(mc_list)
+# create a full dictionary of the variables
+temp_storage = {
+    "data": {var: [] for var in variables},
+    "dy": {var: [] for var in variables},
+    "mc": {var: [] for var in variables},
+}
 
-    print(f"{variable} Arrays successfully created.")
+for file in filelist:
+    full_ak_array = ak.from_parquet(f"{mypath}{file}")
+    for var in variables:
+        # extract the variable values from the file
+        if var != "event_weight" or not file.startswith("data"):
+            values = full_ak_array[var]
+        else:
+            # create event weights = 1 for data
+            ll_len = len(full_ak_array["ll_pt"])
+            values = ak.Array(np.ones(ll_len, dtype=float))
 
-    return data_arr, dy_arr, mc_arr
+        # append values to the correct list
+        if file.startswith("data"):
+            temp_storage["data"][var].append(values)
+        elif file.startswith("dy"):
+            temp_storage["dy"][var].append(values)
+        else:
+            temp_storage["mc"][var].append(values)
+
+variable_list = {}
+# fill the variable list with arrays for each variable
+for var in variables: 
+        data_arr = _concat_to_numpy(temp_storage["data"][var])
+        dy_arr = _concat_to_numpy(temp_storage["dy"][var])
+        mc_arr = _concat_to_numpy(temp_storage["mc"][var])
+        
+        variable_list[var] = [data_arr, dy_arr, mc_arr]
+print("Created dictionary with arrays for all variables.")
+
+
+# --------------------------------------------------------------------------------------------------
+# HELPER FUNCTIONS
 
 
 def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
@@ -116,9 +122,9 @@ def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
     Function to filter the events by channel id and DY region cuts
     -> desired_channel_id: ee = 4, mumu = 5
     """
-    data_channel_id, dy_channel_id, mc_channel_id = create_full_arrays("channel_id")  # noqa: E501
-    data_ll_mass, dy_ll_mass, mc_ll_mass = create_full_arrays("ll_mass")  # noqa: E501
-    data_met, dy_met, mc_met = create_full_arrays("met_pt")
+    data_channel_id, dy_channel_id, mc_channel_id = variable_list["channel_id"]  # noqa: E501
+    data_ll_mass, dy_ll_mass, mc_ll_mass = variable_list["ll_mass"]  # noqa: E501
+    data_met, dy_met, mc_met = variable_list["met_pt"]  
 
     # create masks
     data_id_mask = data_channel_id == desired_channel_id
@@ -151,8 +157,8 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
     var_name = var_instance.name.replace("dilep", "ll").replace("dibjet", "bb")
 
     # get variable arrays and original event weights from files
-    data_arr, dy_arr, mc_arr = create_full_arrays(var_name)
-    data_weights, dy_weights_original, mc_weights = create_full_arrays("event_weight")  # noqa: E501
+    data_arr, dy_arr, mc_arr = variable_list[var_name]
+    data_weights, dy_weights_original, mc_weights = variable_list["event_weight"]  # noqa: E501
 
     # use original DY weights if none are provided
     if dy_weights is None:
@@ -191,45 +197,126 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
     plt.savefig(f"plot_{file_version}.pdf")
 
 # --------------------------------------------------------------------------------------------------
-# MAIN SCRIPT
-
+# BINNING AND DATA PREPARATION FOR TRAINING
 
 # define bins and bin function
-bin_tupples = [(), (), ...]
+
+bin_tupples = [(i * 10, (i + 1) * 10) for i in range(20)]
+bin_tupples[-1] = (190, np.inf)
+
+#print(f'Defined {len(bin_tupples)} bins for pt_ll from 0 to {max_pt+step_size} with step size {step_size}GeV.')
+
 def bin_data(array_to_bin, weight_to_bin, bins=bin_tupples):
     # function should turn the arrays [...] into a list of arrays [[...] , [...], ...] of len(list)) = len(bins)
     # where the first array in the list only contains the events that should fall in the first pt_ll bin, etc.
 
-    # binned_arrays = ....
-    # binned_weights = ....
+    binned_arrays = []
+    binned_weights = []
+
+    for bin_min, bin_max in bins:
+        bin_mask = (array_to_bin >= bin_min) & (array_to_bin < bin_max)
+        binned_arrays.append( array_to_bin[bin_mask] )
+        binned_weights.append( weight_to_bin[bin_mask] )
 
     return binned_arrays, binned_weights
 
 
 # read pt_ll and event weights from files
+data_pt_ll, dy_pt_ll, mc_pt_ll = filter_events_by_channel(*variable_list["ll_pt"], 5)
+data_weights, dy_weights, mc_weights = filter_events_by_channel(*variable_list["event_weight"], 5)
+
 
 # bin the pt_ll and event weights arrays using the bin function
+data_binned_pt_ll, data_binned_weights = bin_data(data_pt_ll, data_weights)
+dy_binned_pt_ll, dy_binned_weights = bin_data(dy_pt_ll, dy_weights)
+mc_binned_pt_ll, mc_binned_weights = bin_data(mc_pt_ll, mc_weights)
+
 
 # calculate number of expected DY events in each bin by doing Data-MC
+expected_dy_yield = []
+for bin_idx in range(len(bin_tupples)):
+    n_data = np.sum(data_binned_weights[bin_idx])
+    n_mc = np.sum(mc_binned_weights[bin_idx])
+    n_dy_expected = n_data - n_mc
+    expected_dy_yield.append(n_dy_expected)
+
+print(f'Expected DY events per bin: {expected_dy_yield}')
 
 # calculate number of actual DY events in each bin by doing sum(event_weights)_bin
+actual_dy_yield = []
+for bin_idx in range(len(bin_tupples)):
+    n_dy_actual = np.sum(dy_binned_weights[bin_idx])
+    actual_dy_yield.append(n_dy_actual)
+
+print(f'Actual DY events per bin: {actual_dy_yield}')
 
 # convert numpy/awkard arrays into torch tensors
-
-# define class model
+data_binned_pt_ll_tensor = [torch.tensor(arr, dtype=torch.float32) for arr in data_binned_pt_ll]
+data_binned_weights_tensor = [torch.tensor(arr, dtype=torch.float32) for arr in data_binned_weights]
+dy_binned_pt_ll_tensor = [torch.tensor(arr, dtype=torch.float32) for arr in dy_binned_pt_ll]
+dy_binned_weights_tensor = [torch.tensor(arr, dtype=torch.float32) for arr in dy_binned_weights]
+expected_dy_yield_tensor = torch.tensor(expected_dy_yield, dtype=torch.float32)[:, None]
+ 
+#-------------------------------------------------------------------------------------------------
+# DEFINE AND TRAIN THE NEURAL NETWORK
 # use a simple feedforward NN with 1-10-1 architecture, ReLu activation
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+class DYReweightingNN(nn.Module):
+    def __init__(self):
+        super(DYReweightingNN, self).__init__()
+        self.fc1 = nn.Linear(1, 10)  # input layer to hidden layer
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(10, 1)  # hidden layer to output layer
 
-# setup the learning rate, loss function (use MSE loss) and optimizer
-# ....
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return x
+
+# instantiate the model
+model = DYReweightingNN().to(device)
+# setup the learning rate, loss function (use MSE loss) and optimizer Adam
+lr = 0.0001
+loss_fn = nn.MSELoss()  # we will do custom reduction for bin importance weighting
+optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+# calculate bin importance for loss weighting
+# bin importance is normalised to the first bin
+
+
+
+bin_importance = [sum(data_binned_weights[i]) / sum(data_weights) for i in range(len(bin_tupples))]
+bin_importance = [imp / bin_importance[0] for imp in bin_importance]
+bin_importance = torch.tensor(bin_importance, dtype=torch.float32)
+print(f'Bin importance values: {bin_importance}')
 
 # training loop for 15 epochs at first
-for epoch in range(15):
+n_epochs = 15
+dy_pt_ll = torch.tensor(dy_pt_ll, dtype=torch.float)[:, None]
+dy_weights = torch.tensor(dy_weights, dtype=torch.float)[:, None]
+
+for epoch in range(n_epochs):
 
     # set gradients to zero
-
+    optimizer.zero_grad()
+    
+    inputs = (dy_pt_ll - dy_pt_ll.mean()) / dy_pt_ll.std()
     # define loss = loss_bin1 + loss_bin2 + ...
     # where loss_bin1 should compare the number of DY events in bin1 after reweighting to the original number of DY events
-
+    #from IPython import embed; embed()
+    pred_correction = model(inputs)  # shape (N_i,) per bin i
+    _, pred_correction_binned = bin_data(dy_pt_ll, pred_correction)
+    updated_weights = [x*y for x,y in zip(pred_correction_binned, dy_binned_weights_tensor)]
+    pred_dy_yield = [x.sum() for x in updated_weights]
+    loss = (sum(
+        loss_fn(pred_dy_yield[i] / expected_dy_yield_tensor[i], torch.tensor([1.0]))*bin_importance[i] for i in range(len(bin_tupples))
+        ) / torch.sum(bin_importance)
+    )
     # do backpropagation and optimization step
+    loss.backward()
+    optimizer.step()
 
-    print(f"epoch {epoch}: Loss = {loss.item()}")
+    print(f"epoch {epoch+1}/{n_epochs}: Loss = {loss.item():.6f}, mean = {pred_correction.mean().item():.6f}, std = {pred_correction.std().item():.6f}")
+
+print("----------------Training complete----------------")
