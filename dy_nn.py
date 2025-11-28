@@ -231,7 +231,7 @@ data_weights, dy_weights, mc_weights = filter_events_by_channel(*variable_list["
 
 # bin the event weights arrays over pt_ll bins
 _, data_binned_weights = bin_data(data_pt_ll, data_weights)
-_, dy_binned_weights = bin_data(dy_pt_ll, dy_weights)
+dy_binned_pt_ll, dy_binned_weights = bin_data(dy_pt_ll, dy_weights)
 _, mc_binned_weights = bin_data(mc_pt_ll, mc_weights)
 
 
@@ -256,6 +256,8 @@ print(f'Actual DY events per bin: {actual_dy_yield}')
 
 # calculate bin importance for loss weighting
 bin_importance = [sum(data_binned_weights[i]) / sum(data_weights) for i in range(len(bin_tupples))]
+bin_importance[0] = bin_importance[0] * 4 # increase importance of first bin
+bin_importance[1] = bin_importance[1] * 2 # increase importance of second bin
 bin_importance = [imp / bin_importance[0] for imp in bin_importance] # normalize to first bin
 bin_importance = torch.tensor(bin_importance, dtype=torch.float32) # convert to torch tensor
 print(f'Bin importance values: {bin_importance}')
@@ -302,40 +304,65 @@ print(f'Loss before training: {original_loss.item():.6f}')
 
 
 # training loop for 15 epochs at first
-n_epochs = 600
+n_epochs = 15
 
 # convert numpy/awkard arrays into torch tensors
 dy_pt_ll = torch.tensor(dy_pt_ll, dtype=torch.float)[:, None]
+dy_binned_pt_ll = [torch.tensor(arr, dtype=torch.float32) for arr in dy_binned_pt_ll]
 dy_binned_weights = [torch.tensor(arr, dtype=torch.float32) for arr in dy_binned_weights]
 
+# Batching to make training faster
+batch_size = 2048
+dataset = torch.utils.data.TensorDataset(dy_pt_ll, dy_weights)
+data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
+
+
+# training loop
 for epoch in range(n_epochs):
-
     # set gradients to zero
     optimizer.zero_grad()
-    
-    inputs = (dy_pt_ll - dy_pt_ll.mean()) / dy_pt_ll.std()
 
-    pred_correction = model(inputs)
-    _, pred_correction_binned = bin_data(dy_pt_ll, pred_correction)
-    updated_weights = [x*y for x,y in zip(pred_correction_binned, dy_binned_weights)]
-    pred_dy_yield = [x.sum() for x in updated_weights] 
+    # loop over batches
+    for inputs_pt_ll,weights in data_loader:
+        # normalize inputs
+        inputs = (inputs_pt_ll - inputs_pt_ll.mean()) / inputs_pt_ll.std()
+        pred_correction = model(inputs)
+        _, batched_pred_correction_binned = bin_data(inputs_pt_ll, pred_correction)
+        batched_pt_ll_binned, batched_weights_binned = bin_data(inputs_pt_ll, weights)
+        # here concatenate new weights and old weights
+        updated_weights = [x*y for x,y in zip(batched_pred_correction_binned, batched_weights_binned)]
+        ########### all_weights = [updated_new_weights] + [old_weights]
+        pred_dy_yield = [x.sum() for x in updated_weights]
 
-    # define loss = (loss_bin1 + loss_bin2 + ...)/sum(bin_importance)
-    loss = (sum(
-        loss_fn(pred_dy_yield[i] / expected_dy_yield[i], torch.tensor([1.0]))*bin_importance[i] for i in range(len(bin_tupples))
-        ) / torch.sum(bin_importance)
-    )
-    # do backpropagation and optimization step
-    loss.backward()
-    optimizer.step()
+        
+        # inputs = (dy_pt_ll - dy_pt_ll.mean()) / dy_pt_ll.std()
 
-    if (epoch + 1) % 10 == 0:
-        print(f"epoch {epoch+1}/{n_epochs}: Loss = {loss.item():.6f}, mean = {pred_correction.mean().item():.6f}, std = {pred_correction.std().item():.6f}")
+        # pred_correction = model(inputs)
+        # _, pred_correction_binned = bin_data(dy_pt_ll, pred_correction)
+        # updated_weights = [x*y for x,y in zip(pred_correction_binned, dy_binned_weights)]
+        # pred_dy_yield = [x.sum() for x in updated_weights] 
+
+        pred_dy_yield = torch.tensor(pred_dy_yield, dtype=torch.float32)
+        expected_dy_yield = 
+
+        # define loss = (loss_bin1 + loss_bin2 + ...)/sum(bin_importance)
+        loss = (sum(
+            loss_fn(pred_dy_yield[i] / expected_dy_yield[i], 1.0)*bin_importance[i] for i in range(len(bin_tupples))
+            ) / torch.sum(bin_importance)
+        )
+        # do backpropagation and optimization step
+        loss.backward()
+        optimizer.step()
+
+        if (epoch + 1) % 10 == 0:
+            print(f"epoch {epoch+1}/{n_epochs}: Loss = {loss.item():.6f}, mean = {pred_correction.mean().item():.6f}, std = {pred_correction.std().item():.6f}")
 
 
 print("----------------Training complete----------------")
 
+inputs = (dy_pt_ll - dy_pt_ll.mean()) / dy_pt_ll.std()
+pred_correction = model(inputs).squeeze(1)
 _, _, _, _, dy_mask, _ = filter_events_by_channel(
     variable_list["ll_pt"][0],
     variable_list["ll_pt"][1],
