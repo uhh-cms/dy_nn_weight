@@ -13,23 +13,16 @@ from modules.hbt.modules.columnflow.columnflow.plotting.plot_functions_1d import
 from modules.hbt.modules.columnflow.columnflow.hist_util import create_hist_from_variables, fill_hist  # noqa: E501
 
 # --------------------------------------------------------------------------------------------------
-# SETUP
-
-
-# choose which year to use
+# FILES SETUP
 year = "22pre_v14"
-
-# define file path
 config_inst = analysis_hbt.get_config(year)
 mypath = f"/data/dust/user/riegerma/hh2bbtautau/dy_dnn_data/inputs_prod20_vbf/{year}/"  # noqa: E501
 filelist = os.listdir(mypath)
-
 example_file = "w_lnu_1j_pt100to200_amcatnlo.parquet"
 fullpath = f"{mypath}{example_file}"
 example_array = ak.from_parquet(fullpath)
-
 variables = example_array.fields
-print(variables)
+# print(variables)
 
 # load DY weight corrections from json file
 dy_file = "/afs/desy.de/user/a/alvesand/public/dy_corrections.json.gz"
@@ -37,6 +30,7 @@ dy_correction = correctionlib.CorrectionSet.from_file(dy_file)
 correction_set = dy_correction["dy_weight"]
 syst = "nom"
 era = year.replace("22", "2022").replace("_v14", "EE")
+# --------------------------------------------------------------------------------------------------
 
 # get variables with binning info
 ll_mass = config_inst.variables.n.dilep_mass
@@ -55,23 +49,13 @@ hh_eta = config_inst.variables.n.hh_eta
 hh_phi = config_inst.variables.n.hh_phi
 jet1_pt = config_inst.variables.n.jet1_pt
 
+met_pt = config_inst.variables.n.met_pt
+met_phi = config_inst.variables.n.met_phi
 
 # get processes
 bkg_process = od.Process(name="mc", id="+", color1="#e76300", label="MC")
 dy_process = config_inst.get_process("dy")
 data_process = config_inst.get_process("data")
-
-
-# helper to safely concatenate awkward arrays and return a numpy array
-def _concat_to_numpy(lst):
-    if not lst:
-        return np.array([], dtype=float)
-    concatenated = ak.concatenate(lst)
-    try:
-        return ak.to_numpy(concatenated)
-    except Exception:
-        return np.asarray(ak.to_list(concatenated), dtype=float)
-
 
 # create a full dictionary of the variables
 temp_storage = {
@@ -99,23 +83,26 @@ for file in filelist:
         else:
             temp_storage["mc"][var].append(values)
 
-variable_list = {}
 
-# fill the variable list with arrays for each variable
-for var in variables:
-    data_arr = _concat_to_numpy(temp_storage["data"][var])
-    dy_arr = _concat_to_numpy(temp_storage["dy"][var])
-    mc_arr = _concat_to_numpy(temp_storage["mc"][var])
-
-    variable_list[var] = [data_arr, dy_arr, mc_arr]
-
-print("Created dictionary with arrays for all variables.")
+# binnig
+bin_tupples = [(i * 10, (i + 1) * 10) for i in range(20)]
+bin_tupples[-1] = (190, np.inf)
 
 # --------------------------------------------------------------------------------------------------
 # HELPER FUNCTIONS
 
 
-def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
+def _concat_to_numpy(lst):
+    if not lst:
+        return np.array([], dtype=float)
+    concatenated = ak.concatenate(lst)
+    try:
+        return ak.to_numpy(concatenated)
+    except Exception:
+        return np.asarray(ak.to_list(concatenated), dtype=float)
+
+
+def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id, return_masks=False):
     """
     Function to filter the events by channel id and DY region cuts
     -> desired_channel_id: ee = 4, mumu = 5
@@ -142,7 +129,10 @@ def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
     dy_mask = dy_id_mask & dy_ll_mask & dy_met_mask
     mc_mask = mc_id_mask & mc_ll_mask & mc_met_mask
 
-    return data_arr[data_mask], dy_arr[dy_mask], mc_arr[mc_mask]
+    if return_masks:
+        return data_arr[data_mask], dy_arr[dy_mask], mc_arr[mc_mask], data_mask, dy_mask, mc_mask
+    else:
+        return data_arr[data_mask], dy_arr[dy_mask], mc_arr[mc_mask]
 
 
 def hist_function(var_instance, data, weights):
@@ -151,7 +141,7 @@ def hist_function(var_instance, data, weights):
     return h
 
 
-def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None, filter_events: bool = True, channel_id=None):  # noqa: E501
+def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None, filter_events: bool = True):  # noqa: E501
     var_name = var_instance.name.replace("dilep", "ll").replace("dibjet", "bb")
 
     # get variable arrays and original event weights from files
@@ -166,11 +156,11 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
         print("--> Using updated DY event weights!")
         dy_weights = dy_weights
 
-    # filter arrays considering ee channel id and DY region cuts
+    # filter arrays considering mumu channel id and DY region cuts
     if filter_events:
-        data_arr, dy_arr, mc_arr = filter_events_by_channel(data_arr, dy_arr, mc_arr, channel_id)  # noqa: E501
+        data_arr, dy_arr, mc_arr = filter_events_by_channel(data_arr, dy_arr, mc_arr, 5)  # noqa: E501
         data_weights, dy_weights, mc_weights = filter_events_by_channel(  # noqa: E501
-            data_weights, dy_weights, mc_weights, channel_id
+            data_weights, dy_weights, mc_weights, 5
         )
 
     # update binning in histograms
@@ -193,130 +183,158 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
     )
 
     plt.savefig(f"plot_{file_version}.pdf")
-    print(f"Plot saved as plot_{file_version}.pdf")
-
-# --------------------------------------------------------------------------------------------------
-# MAIN SCRIPT
-
-
-# define binning based on ll_pt
-bin_tupples = [(i * 10, (i + 1) * 10) for i in range(20)]
-bin_tupples[-1] = (190, np.inf)
 
 
 def bin_data(array_to_bin, weight_to_bin, bins=bin_tupples):
-    # initialize lists to hold binned info
+    # turn the arrays [...] into a list of arrays [[...] , [...], ...] of len(list)) = len(bins)
+    # where the first array in the list only contains the events that should fall in the first pt_ll bin, etc.
+
     binned_arrays = []
     binned_weights = []
 
     for bin_min, bin_max in bins:
         bin_mask = (array_to_bin >= bin_min) & (array_to_bin < bin_max)
-
-        # apply bin mask
-        bin_array = array_to_bin[bin_mask]
-        weight_bin_array = weight_to_bin[bin_mask]
-
-        # save bin info
-        binned_arrays.append(bin_array)
-        binned_weights.append(weight_bin_array)
-
-    # TODO: move avg of bin stat factors to one for many bins...
+        binned_arrays.append(array_to_bin[bin_mask])
+        binned_weights.append(weight_to_bin[bin_mask])
 
     return binned_arrays, binned_weights
 
 
-# read data from files
-data_pt, dy_pt, mc_pt = filter_events_by_channel(*variable_list["ll_pt"], 5)
+# fill the variable list with arrays for each variable
+variable_list = {}
+for var in variables:
+    data_arr = _concat_to_numpy(temp_storage["data"][var])
+    dy_arr = _concat_to_numpy(temp_storage["dy"][var])
+    mc_arr = _concat_to_numpy(temp_storage["mc"][var])
+
+    variable_list[var] = [data_arr, dy_arr, mc_arr]
+
+# read pt_ll and event weights from files
+data_pt_ll, dy_pt_ll, mc_pt_ll = filter_events_by_channel(*variable_list["ll_pt"], 5)  # noqa: E501
 data_weights, dy_weights, mc_weights = filter_events_by_channel(*variable_list["event_weight"], 5)  # noqa: E501
-n_events_data = len(data_pt)
 
-# bin the data
-binned_var_data, binned_weights_data = bin_data(data_pt, data_weights)  # noqa: E501
-binned_var_mc, binned_weights_mc = bin_data(mc_pt, mc_weights)
-binned_var_dy, binned_weights_dy = bin_data(dy_pt, dy_weights)
+# bin the event weights arrays over pt_ll bins
+_, data_binned_weights = bin_data(data_pt_ll, data_weights)
+dy_binned_pt_ll, dy_binned_weights = bin_data(dy_pt_ll, dy_weights)
+_, mc_binned_weights = bin_data(mc_pt_ll, mc_weights)
 
-# get bin importance relative to first bin
-bin_stat_factors = [len(binned_weights_data[i]) / n_events_data for i in range(len(bin_tupples))]  # noqa: E501
-bin_stat_factors = [x / bin_stat_factors[0] for x in bin_stat_factors]
+# number of expected DY events in each bin by doing Data-MC
+expected_dy_yield = []
+for i in range(len(bin_tupples)):
+    n_data = np.sum(data_binned_weights[i])
+    n_mc = np.sum(mc_binned_weights[i])
+    n_dy_expected = n_data - n_mc
+    expected_dy_yield.append(n_dy_expected)
+# print(f'Expected DY events per bin: {expected_dy_yield}')
 
-# calculate yields per bin
-yield_targets = [sum(x) - sum(y) for x, y in zip(binned_weights_data, binned_weights_mc)]  # noqa: E501
-yield_dy_unweighted = [sum(x) for x in binned_weights_dy]
-sf_per_bin = [x/y for x, y in zip(yield_targets, yield_dy_unweighted)]
+# number of actual DY events in each bin
+actual_dy_yield = []
+for i in range(len(bin_tupples)):
+    n_dy_actual = np.sum(dy_binned_weights[i])
+    actual_dy_yield.append(n_dy_actual)
+# print(f'Actual DY events per bin: {actual_dy_yield}')
 
-# just FYI
-print("\n------------------------------------------------------------------")
-print("Target DY yield per bin:", yield_targets)
-print("Unweighted DY yield per bin:", yield_dy_unweighted)
-print("Target DY SF per bin:", sf_per_bin)
-print("Bin importance (calculated from # data events) :", bin_stat_factors)  # noqa: E501
-print("------------------------------------------------------------------")
-
-# some torch tensor conversions
-dy_pt = torch.tensor(dy_pt, dtype=torch.float)[:, None]
-# dy_weights = torch.tensor(dy_weights, dtype=torch.float)[:, None]
-yield_targets = torch.tensor(yield_targets, dtype=torch.float)[:, None]
-bin_stat_factors = torch.tensor(bin_stat_factors, dtype=torch.float)
-total_bin_factor = bin_stat_factors.sum()
-binned_weights_dy = [torch.tensor(x, dtype=torch.float) for x in binned_weights_dy]  # noqa: E501
+# calculate bin importance for loss weighting
+# TODO: discuss other possible definitions of bin importance
+bin_importance = [sum(data_binned_weights[i]) / sum(data_weights) for i in range(len(bin_tupples))]  # noqa: E501
+bin_importance = torch.tensor(bin_importance, dtype=torch.float32)
+bin_importance = bin_importance / bin_importance[0]
+print(f'Bin importance values: {bin_importance}')
 
 
-# ------------------------------------------------------------------------------------------------
-# define model
-class DYModel(torch.nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.linear1 = torch.nn.Linear(1, 10)
-        self.activation1 = torch.nn.ReLU()
-        self.linear2 = torch.nn.Linear(10, 1)
+# ----------------------------------------------------------------------------------
+# NN SETUP
+
+# use a simple feedforward NN with 1-10-1 architecture, ReLu activation
+class DYReweightingNN(nn.Module):
+    def __init__(self):
+        super(DYReweightingNN, self).__init__()
+        self.fc1 = nn.Linear(1, 10)  # input layer to hidden layer
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(10, 1)  # hidden layer to output layer
 
     def forward(self, x):
-        x = self.linear1(x)
-        x = self.activation1(x)
-        x = self.linear2(x)
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
         return x
 
 
-# setup
-dy_model = DYModel()
-loss_fn = nn.MSELoss()
-learning_rate = 1e-3
-n_epochs = 500
-optimizer = torch.optim.Adam(dy_model.parameters(), lr=learning_rate)
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")
+model = DYReweightingNN().to(device)
+lr = 0.0015
+loss_fn = nn.MSELoss(reduction='none')
+optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+batch_size = int(len(dy_pt_ll)/2)
+n_epochs = 200
+# ----------------------------------------------------------------------------------
 
-# training
+# convert actual and expected dy yields to torch tensors
+actual_dy_yield = torch.tensor(actual_dy_yield, dtype=torch.float32)[:, None]
+expected_dy_yield = torch.tensor(expected_dy_yield, dtype=torch.float32)[:, None]  # noqa: E501
+
+# calculate and print original loss before training
+original_loss = (sum(
+    loss_fn(actual_dy_yield[i] / expected_dy_yield[i], torch.tensor([1.0])) * bin_importance[i] for i in range(len(bin_tupples))  # noqa: E501
+    ) / torch.sum(bin_importance)
+)
+print(f'Loss before training: {original_loss.item():.6f}\n')
+
+# prepare dataloader
+dy_pt_ll = torch.tensor(dy_pt_ll, dtype=torch.float)[:, None]
+dy_weights = torch.tensor(dy_weights, dtype=torch.float)[:, None]
+dataset = torch.utils.data.TensorDataset(dy_pt_ll, dy_weights)
+data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)  # noqa: E501
+
+# TODO : fix data_loader
+
+# loop over batches
 for epoch in range(n_epochs):
-    # clear gradients
-    optimizer.zero_grad()
+    for i, (inputs_pt_ll, weights) in enumerate(data_loader):
+        inputs_pt_ll = dy_pt_ll
+        weights = dy_weights
+        optimizer.zero_grad()
 
-    # scale ll_pt values
-    inputs = (dy_pt-dy_pt.mean())/dy_pt.std()
+        # normalize inputs
+        inputs = (inputs_pt_ll - inputs_pt_ll.mean()) / inputs_pt_ll.std()
 
-    # get DY weight per event
-    bin_pred = dy_model(inputs)
+        # get dy weight predictions from the model
+        pred_correction = model(inputs)
+        _, batched_pred_correction_binned = bin_data(inputs_pt_ll, pred_correction)  # noqa: E501
+        _, batched_weights_binned = bin_data(inputs_pt_ll, weights)
 
-    # bin DY weights
-    _, binned_pred_weights = bin_data(dy_pt, bin_pred)
-    dy_updated_weights = [x*y for x, y in zip(binned_pred_weights, binned_weights_dy)]  # noqa: E501
+        # update event weights with predicted correction
+        updated_weights = [x*y for x, y in zip(batched_pred_correction_binned, batched_weights_binned)]  # noqa: E501
+        pred_dy_yield = [x.sum() * (len(dy_pt_ll) / len(inputs_pt_ll)) for x in updated_weights]  # noqa: E501
+        pred_dy_yield = torch.stack(pred_dy_yield)[:, None]
+        loss = torch.sum(loss_fn(pred_dy_yield/expected_dy_yield, torch.tensor(1.0)) * bin_importance[:, None], dim=0) / torch.sum(bin_importance)  # noqa: E501
 
-    # calculate predicted yield per bin
-    yield_pred = [x.sum() for x in dy_updated_weights]
+        # do backpropagation and optimization step
+        loss.backward()
+        optimizer.step()
 
-    # compute loss taking into account bin importance
-    loss = (sum(
-        bin_stat_factors[i] * loss_fn(
-            yield_pred[i] / yield_targets[i], torch.tensor([1.0])
-        )
-        for i in range(len(bin_tupples))
-    ) / total_bin_factor)
+    print(f"---- Epoch {epoch + 1}/{n_epochs} : Loss = {loss.item():.6f}, mean = {pred_correction.mean().item():.6f}, std = {pred_correction.std().item():.6f}")  # noqa: E501
 
-    # backpropagation
-    loss.backward()
-    optimizer.step()
+print("\n---------------- Training completed -----------------")
+print("\nFinal ratios pred_dy_yield / expected_dy_yield :")
+print(pred_dy_yield/expected_dy_yield)
 
-    # just FYI
-    print(f"epoch {epoch}: Loss = {loss.item()}, mean : {bin_pred.mean()}, std : {bin_pred.std()}")  # noqa: E501
-
-print("\nTraining complete. yield_pred is:\n")
-print(yield_pred)
-print("--------------------------------------------------")
+inputs = (dy_pt_ll - dy_pt_ll.mean()) / dy_pt_ll.std()
+pred_correction = model(inputs).squeeze(1)
+_, _, _, _, dy_mask, _ = filter_events_by_channel(
+    variable_list["ll_pt"][0],
+    variable_list["ll_pt"][1],
+    variable_list["ll_pt"][2],
+    5,
+    return_masks=True,
+)
+final_weights = variable_list["event_weight"][1]
+final_weights[dy_mask] = final_weights[dy_mask] * pred_correction.detach().cpu().numpy().flatten()
+plot_function(ll_pt, "nn_weights_ll_pt", dy_weights=final_weights)
+plot_function(ll_mass, "nn_weights_ll_mass", dy_weights=final_weights)
+plot_function(ll_eta, "nn_weights_ll_eta", dy_weights=final_weights)
+plot_function(bb_pt, "nn_weights_bb_pt", dy_weights=final_weights)
+plot_function(bb_mass, "nn_weights_bb_mass", dy_weights=final_weights)
+plot_function(bb_eta, "nn_weights_bb_eta", dy_weights=final_weights)
+plot_function(jet1_pt, "nn_weights_jet1_pt", dy_weights=final_weights)
