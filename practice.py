@@ -1,65 +1,93 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import math
 import awkward as ak
-import pandas as pd
+import order as od
 import os
 import correctionlib
 
+from modules.hbt.hbt.config.analysis_hbt import analysis_hbt
+from modules.hbt.modules.columnflow.columnflow.plotting.plot_functions_1d import plot_variable_stack  # noqa: E501
+from modules.hbt.modules.columnflow.columnflow.hist_util import create_hist_from_variables, fill_hist  # noqa: E501
 
-#creating a path to access exemplary data files
-mypath = "/data/dust/user/riegerma/hh2bbtautau/dy_dnn_data/inputs/22pre_v14/"
+# --------------------------------------------------------------------------------------------------
+# SETUP
+
+# choose which year to use
+year = "22pre_v14"
+
+# define file path
+config_inst = analysis_hbt.get_config(year)
+mypath = f"/data/dust/user/riegerma/hh2bbtautau/dy_dnn_data/inputs_prod20_vbf/{year}/"  # noqa: E501
 example_file = "w_lnu_1j_pt100to200_amcatnlo.parquet"
 fullpath = f"{mypath}{example_file}"
 example_array = ak.from_parquet(fullpath)
-#make arrays with the extracted data 
-ll_pt = ak.from_parquet(fullpath)["ll_pt"]
-ll_eta = ak.from_parquet(fullpath)["ll_eta"]
-event_weight = ak.from_parquet(fullpath)["event_weight"]
 
-#change the event weights randomly for testing purposes
-new_event_weight = np.ones(115, dtype=float)
-for i in range(len(event_weight)):
-    if ll_pt[i]<50:
-        new_event_weight[i]=abs(event_weight[i])*0.8
-    else:
-        new_event_weight[i]=abs(event_weight[i])*1.2
+# load DY weight corrections from json file
+dy_file = "/afs/desy.de/user/a/alvesand/public/dy_corrections.json.gz"
+dy_correction = correctionlib.CorrectionSet.from_file(dy_file)
+correction_set = dy_correction["dy_weight"]
+syst = "nom"
+era = year.replace("22", "2022").replace("_v14", "EE")
+
+# get variables with binning info
+ll_mass = config_inst.variables.n.dilep_mass
+ll_pt = config_inst.variables.n.dilep_pt
+ll_eta = config_inst.variables.n.dilep_eta
+ll_phi = config_inst.variables.n.dilep_phi
+
+bb_mass = config_inst.variables.n.dibjet_mass
+bb_pt = config_inst.variables.n.dibjet_pt
+bb_eta = config_inst.variables.n.dibjet_eta
+bb_phi = config_inst.variables.n.dibjet_phi
+
+hh_mass = config_inst.variables.n.hh_mass
+hh_pt = config_inst.variables.n.hh_pt
+hh_eta = config_inst.variables.n.hh_eta
+hh_phi = config_inst.variables.n.hh_phi
+
+met_pt = config_inst.variables.n.met_pt
+met_phi = config_inst.variables.n.met_phi
 
 
+# get processes
+bkg_process = od.Process(name="mc", id="+", color1="#e76300", label="MC")
+dy_process = config_inst.get_process("dy")
+data_process = config_inst.get_process("data")
 
+# --------------------------------------------------------------------------------------------------
+# HELPER FUNCTIONS
 
-
-
-
-
-
-
-variables = example_array.fields
-print(variables)
 
 def create_full_arrays(variable):
+    """
+    Function to read varaible column from all parquet files
+    """
     filelist = os.listdir(mypath)
 
     data_list = []
     dy_list = []
     mc_list = []
-    
+
     for file in filelist:
-        #extract the values from the file if they exist
-        try:
+        # extract the variable values from the file
+        if variable != "event_weight":
             values = ak.from_parquet(f"{mypath}{file}")[variable]
-        #for the data that don't have event weights create event weights with the value 1
-        except:
-            ll_len = len(ak.from_parquet(f"{mypath}{file}")["ll_pt"])
-            values = ak.Array(np.ones(ll_len, dtype=float))
-        #append values to the correct list
+        # extract event weights
+        else:
+            if not file.startswith("data_"):
+                values = ak.from_parquet(f"{mypath}{file}")[variable]
+            else:
+                # create event weights = 1 for data
+                ll_len = len(ak.from_parquet(f"{mypath}{file}")["ll_pt"])
+                values = ak.Array(np.ones(ll_len, dtype=float))
+
+        # append values to the correct list
         if file.startswith("data"):
             data_list.append(values)
         elif file.startswith("dy"):
             dy_list.append(values)
         else:
             mc_list.append(values)
-
 
     # helper to safely concatenate awkward arrays and return a numpy array
     def _concat_to_numpy(lst):
@@ -80,164 +108,99 @@ def create_full_arrays(variable):
     return data_arr, dy_arr, mc_arr
 
 
+def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id):
+    """
+    Function to filter the events by channel id and DY region cuts
+    -> desired_channel_id: ee = 4, mumu = 5
+    """
+    data_channel_id, dy_channel_id, mc_channel_id = create_full_arrays("channel_id")  # noqa: E501
+    data_ll_mass, dy_ll_mass, mc_ll_mass = create_full_arrays("ll_mass")  # noqa: E501
+    data_met, dy_met, mc_met = create_full_arrays("met_pt")
+
+    # create masks
+    data_id_mask = data_channel_id == desired_channel_id
+    dy_id_mask = dy_channel_id == desired_channel_id
+    mc_id_mask = mc_channel_id == desired_channel_id
+
+    data_ll_mask = (data_ll_mass >= 70) & (data_ll_mass <= 110)
+    dy_ll_mask = (dy_ll_mass >= 70) & (dy_ll_mass <= 110)
+    mc_ll_mask = (mc_ll_mass >= 70) & (mc_ll_mass <= 110)
+
+    data_met_mask = data_met < 45
+    dy_met_mask = dy_met < 45
+    mc_met_mask = mc_met < 45
+
+    # combine masks
+    data_mask = data_id_mask & data_ll_mask & data_met_mask
+    dy_mask = dy_id_mask & dy_ll_mask & dy_met_mask
+    mc_mask = mc_id_mask & mc_ll_mask & mc_met_mask
+
+    return data_arr[data_mask], dy_arr[dy_mask], mc_arr[mc_mask]
 
 
+def hist_function(var_instance, data, weights):
+    h = create_hist_from_variables(var_instance, weight=True)
+    fill_hist(h, {var_instance.name: data, "weight": weights})
+    return h
 
 
+def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None, filter_events: bool = True):  # noqa: E501
+    var_name = var_instance.name.replace("dilep", "ll").replace("dibjet", "bb")
 
-#define a function for plotting histograms
+    # get variable arrays and original event weights from files
+    data_arr, dy_arr, mc_arr = create_full_arrays(var_name)
+    data_weights, dy_weights_original, mc_weights = create_full_arrays("event_weight")  # noqa: E501
 
-def plot_histogram(variable, file_version, dy_weights, n_bins=None):
-    data_arr, dy_arr, mc_arr = create_full_arrays(variable)
-    _, _, mc_weights = create_full_arrays("event_weight")
+    # use original DY weights if none are provided
+    if dy_weights is None:
+        print("--> Using original DY event weights!")
+        dy_weights = dy_weights_original
+    else:
+        print("--> Using updated DY event weights!")
+        dy_weights = dy_weights
 
-    # If no bins are provided create default bins
-    if n_bins is None:
-        if variable == "ll_pt" or variable == "bb_pt" or variable == "llbb_pt" or variable == "lep1_pt" or variable == "jet1_pt":
-            n_bins = np.linspace(0, 400, 41)
-        elif variable == "ll_eta" or variable == "bb_eta" or variable == "llbb_eta" or variable == "lep1_eta" or variable == "jet1_eta":
-            n_bins = np.linspace(-math.pi, math.pi, 21)
-        elif variable == "ll_phi" or variable == "bb_phi" or variable == "llbb_phi" or variable == "lep1_phi" or variable == "jet1_phi":
-            n_bins = np.linspace(-math.pi, math.pi, 21)
-        elif variable == "ll_mass" or variable == "bb_mass":
-            n_bins = np.linspace(0, 400, 41)
-        elif variable == "llbb_mass":
-            n_bins = np.linspace(0, 800, 41)
-        elif variable == "n_jet" or variable == "n_btag_pnet" or variable == "n_btag_pnet_hhb":
-            n_bins = np.linspace(0, 10, 11)
-        else:
-            n_bins = np.linspace(min(min(data_arr), min(min(dy_arr), min(mc_arr))), max(max(data_arr), max(max(dy_arr), max(mc_arr))), 21)
-        
+    # filter arrays considering mumu channel id and DY region cuts
+    if filter_events:
+        data_arr, dy_arr, mc_arr = filter_events_by_channel(data_arr, dy_arr, mc_arr, 5)  # noqa: E501
+        data_weights, dy_weights, mc_weights = filter_events_by_channel(  # noqa: E501
+            data_weights, dy_weights, mc_weights, 5
+        )
 
-    fig, ax = plt.subplots()
+    # update binning in histograms
+    data_hist = hist_function(var_instance, data_arr, data_weights)
+    dy_hist = hist_function(var_instance, dy_arr, dy_weights)
+    mc_hist = hist_function(var_instance, mc_arr, mc_weights)
+    hists_to_plot = {
+        dy_process: dy_hist,
+        data_process: data_hist,
+        bkg_process: mc_hist,
+    }
 
-    # Plotting MC and DY histograms
-    # using clip to add overflow events to the last bin
-    ax.hist([np.clip(mc_arr, n_bins[0], n_bins[-1]), np.clip(dy_arr, n_bins[0], n_bins[-1])], 
-            bins=n_bins, 
-            histtype="barstacked", 
-            color=['red', 'blue'], 
-            label=['MC', 'DY'], 
-            weights=[mc_weights, dy_weights])
+    # create figure
+    fig, _ = plot_variable_stack(
+        hists=hists_to_plot,
+        config_inst=config_inst,
+        category_inst=config_inst.get_category("dyc"),
+        variable_insts=[var_instance,],
+        shift_insts=[config_inst.get_shift("nominal")],
+    )
 
-    # Data: per-bin counts, plot as black dots at bin centers
-    data_counts, bins = np.histogram(np.clip(data_arr, n_bins[0], n_bins[-1]), bins=n_bins)
-    bin_centers = 0.5 * (bins[:-1] + bins[1:])
-    ax.plot(bin_centers, data_counts, 'ko', label='Data')
+    plt.savefig(f"plot_{file_version}.pdf")
 
-
-    ax.set_xlabel(variable)
-    ax.set_ylabel('Events / bin')
-    ax.legend()
-    ax.set_title(f'{variable} histogram')
-    plt.savefig(f"{variable}_{file_version}.pdf")
-    plt.show()
+# --------------------------------------------------------------------------------------------------
+# MAIN SCRIPT
 
 
-
-
-
-
-# Plot original histogram with old DY event weights
-# extract full arrays for ll_pt and event weights
-data_ll_pt, dy_ll_pt, mc_ll_pt = create_full_arrays("ll_pt")
-data_event_weight, dy_event_weight, mc_event_weight = create_full_arrays("event_weight")
-
-# define binning
-n_bins = np.linspace(0, 400, 21)
-
-#plot_histogram("ll_pt", "old_event_weights", dy_event_weight, n_bins)
-
-
-
-
-
-
-
-
-# # Plot histogram with new DY event weights
-# # Calculate new event weights for DY
-# data_counts, _ = np.histogram(np.clip(data_ll_pt, n_bins[0], n_bins[-1]), bins=n_bins)
-# dy_counts, _ = np.histogram(np.clip(dy_ll_pt, n_bins[0], n_bins[-1]), bins=n_bins, weights=dy_event_weight)
-# mc_counts, _ = np.histogram(np.clip(mc_ll_pt, n_bins[0], n_bins[-1]), bins=n_bins, weights=mc_event_weight)
-# # If the DY counts are zero, avoid division by zero
-# with np.errstate(divide='ignore', invalid='ignore'):
-#     bin_factor = (data_counts - mc_counts)/ dy_counts
-# bad = (~np.isfinite(bin_factor)) | (dy_counts == 0)
-# bin_factor[bad] = 1.0
-
-
-# # Map each dy_ll_pt to its corresponding bin factor
-# dy_bin_idx = np.digitize(dy_ll_pt, bins=n_bins) - 1
-# dy_bin_idx = np.clip(dy_bin_idx, 0, len(bin_factor)-1)
-
-# new_dy_event_weight = dy_event_weight * bin_factor[dy_bin_idx]
-
-# # Plot the bin factors
-# plt.plot(bin_factor, 'bo')
-# plt.xlabel("ll_pt")
-# plt.ylabel("Ratio")
-# plt.title("Ratio of new to old DY event weights")
-# plt.savefig("dy_event_weight_ratio.pdf")
-# plt.show()
-
-
-#plot_histogram("ll_pt", "new_event_weights", new_dy_event_weight, n_bins)
-
-
-
-
-
-# Use another method to get DY weights from correctionlib
-dy_file = "/afs/desy.de/user/a/alvesand/public/dy_corrections.json.gz"
-dy_correction = correctionlib.CorrectionSet.from_file(dy_file)
-correction_set = dy_correction["dy_weight"]
-# inputs = ['era', 'njets', 'ntags', 'ptll', 'syst']
-era = "2022preEE"
-syst =  "nom"
-# weight = correction_set.evaluate(era,  "n_jet", "n_tag", "ll_pt", syst)
-
-
-
-
+# get DY weights from json
 _, dy_n_jet, _ = create_full_arrays("n_jet")
 _, dy_n_tag, _ = create_full_arrays("n_btag_pnet")
-
-
+_, dy_event_weight, _ = create_full_arrays("event_weight")
+_, dy_ll_pt, _ = create_full_arrays("ll_pt")
 weight = correction_set.evaluate(era, dy_n_jet, dy_n_tag, dy_ll_pt, syst)
 correctionlib_weight = weight * dy_event_weight
-# print(correctionlib_weight)
 
-# plot_histogram("bb_mass", "correctionlib_weights", correctionlib_weight)
-# plot_histogram("ll_mass", "correctionlib_weights", correctionlib_weight)
-# plot_histogram("llbb_mass", "correctionlib_weights", correctionlib_weight)
+# use original DY weights
+plot_function(ll_pt, "original_dy_weights")
 
-# Filter the events for different categories
-#filtering by channel_id: ee = 4, mumu = 5
-def filter_events_by_channel(array, desired_channel_id):
-    _, dy_channel_id, _ = create_full_arrays("channel_id")
-    print(dy_channel_id)
-    filtered_array = np.array([])
-    for i in range(len(dy_channel_id)):
-        if dy_channel_id[i] == desired_channel_id:
-            filtered_array = np.append(filtered_array, array[i])
-    print(f"Filtered for channel ID {desired_channel_id}: {len(filtered_array)} entries")
-    return filtered_array
-
-filter_events_by_channel(dy_ll_pt, 4)  # for ee channel
-filter_events_by_channel(dy_ll_pt, 5)  # for mumu channel
-
-# Filtering by ll_mass 70-110 GeV
-def filter_events_by_ll_mass(array, mass_min, mass_max):
-    _, dy_ll_mass, _ = create_full_arrays("ll_mass")
-    print(dy_ll_mass)
-    filtered_array = np.array([])
-    for i in range(len(dy_ll_mass)):
-        if mass_min <= dy_ll_mass[i] <= mass_max:
-            filtered_array = np.append(filtered_array, array[i])
-    print(f"Filtered for ll_mass between {mass_min} and {mass_max} GeV: {len(filtered_array)} entries")
-    return filtered_array
-
-filter_events_by_ll_mass(dy_ll_pt, 70, 110)  # for ll_mass between 70 and 110 GeV   
-
-# Filtering by met < 45 GeV
+# use updated DY weights form json file
+plot_function(ll_pt, "correctionlib_weights", dy_weights=correctionlib_weight)
