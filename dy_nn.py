@@ -1,19 +1,63 @@
+from __future__ import annotations
+
 import numpy as np
 import matplotlib.pyplot as plt
 import awkward as ak
 import order as od
 import os
 import correctionlib
-
+import math
 import torch
 from torch import nn
+from typing import Sequence, Generator
 
 from modules.hbt.hbt.config.analysis_hbt import analysis_hbt
 from modules.hbt.modules.columnflow.columnflow.plotting.plot_functions_1d import plot_variable_stack  # noqa: E501
 from modules.hbt.modules.columnflow.columnflow.hist_util import create_hist_from_variables, fill_hist  # noqa: E501
 
 # --------------------------------------------------------------------------------------------------
-# FILES SETUP
+# Dataloader for batching
+class InMemoryDataLoader:
+
+    def __init__(
+        self,
+        input: torch.Tensor | Sequence[torch.Tensor],
+        batch_size: int | None = None,
+        shuffle: bool = False,
+        drop_last: bool = True,
+    ) -> None:
+        self.input = input
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+
+    def __iter__(self) -> Generator[torch.Tensor | Sequence[torch.Tensor], None, None]:
+        # parse input type
+        multi_input = isinstance(self.input, (list, tuple))
+        if multi_input and not self.input:
+            raise ValueError("input sequence is empty")
+
+        # create extraction indices
+        input_len = (self.input[0] if multi_input else self.input).shape[0]
+        if not input_len:
+            raise ValueError("input has zero length")
+        indices = (torch.randperm if self.shuffle else torch.arange)(input_len, dtype=torch.int32)
+
+        # determine number of batches
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer")
+        n_batches = int((math.floor if self.drop_last else math.ceil)(input_len / self.batch_size))
+
+        # yield batches
+        for i in range(n_batches):
+            batch_indices = indices[i * self.batch_size:(i + 1) * self.batch_size]
+            if multi_input:
+                yield type(self.input)(inp[batch_indices] for inp in self.input)
+            else:
+                yield self.input[batch_indices]
+
+# --------------------------------------------------------------------------------------------------
+# SETUP of files
 year = "22pre_v14"
 config_inst = analysis_hbt.get_config(year)
 mypath = f"/data/dust/user/riegerma/hh2bbtautau/dy_dnn_data/inputs_prod20_vbf/{year}/"  # noqa: E501
@@ -89,9 +133,7 @@ bin_tupples = [(i * 10, (i + 1) * 10) for i in range(20)]
 bin_tupples[-1] = (190, np.inf)
 
 # --------------------------------------------------------------------------------------------------
-# HELPER FUNCTIONS
-
-
+# helper functions
 def _concat_to_numpy(lst):
     if not lst:
         return np.array([], dtype=float)
@@ -100,7 +142,6 @@ def _concat_to_numpy(lst):
         return ak.to_numpy(concatenated)
     except Exception:
         return np.asarray(ak.to_list(concatenated), dtype=float)
-
 
 def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id, return_masks=False):
     """
@@ -134,12 +175,10 @@ def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id, retur
     else:
         return data_arr[data_mask], dy_arr[dy_mask], mc_arr[mc_mask]
 
-
 def hist_function(var_instance, data, weights):
     h = create_hist_from_variables(var_instance, weight=True)
     fill_hist(h, {var_instance.name: data, "weight": weights})
     return h
-
 
 def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None, filter_events: bool = True):  # noqa: E501
     var_name = var_instance.name.replace("dilep", "ll").replace("dibjet", "bb")
@@ -184,7 +223,6 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
 
     plt.savefig(f"plot_{file_version}.pdf")
 
-
 def bin_data(array_to_bin, weight_to_bin, bins=bin_tupples):
     # turn the arrays [...] into a list of arrays [[...] , [...], ...] of len(list)) = len(bins)
     # where the first array in the list only contains the events that should fall in the first pt_ll bin, etc.
@@ -198,7 +236,7 @@ def bin_data(array_to_bin, weight_to_bin, bins=bin_tupples):
         binned_weights.append(weight_to_bin[bin_mask])
 
     return binned_arrays, binned_weights
-
+# --------------------------------------------------------------------------------------------------
 
 # fill the variable list with arrays for each variable
 variable_list = {}
@@ -243,9 +281,7 @@ print(f'Bin importance values: {bin_importance}')
 
 
 # ----------------------------------------------------------------------------------
-# NN SETUP
-
-# use a simple feedforward NN with 1-10-1 architecture, ReLu activation
+# SETUP for the NN
 class DYReweightingNN(nn.Module):
     def __init__(self):
         super(DYReweightingNN, self).__init__()
@@ -259,12 +295,12 @@ class DYReweightingNN(nn.Module):
         x = self.fc2(x)
         return x
 
-
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device = torch.device("cpu")
 model = DYReweightingNN().to(device)
-lr = 0.0015
+lr = 3e-3
+lr_threshold = 0.04
 loss_fn = nn.MSELoss(reduction='none')
+loss_target = 0.01
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 batch_size = int(len(dy_pt_ll)/2)
 n_epochs = 200
@@ -284,57 +320,67 @@ print(f'Loss before training: {original_loss.item():.6f}\n')
 # prepare dataloader
 dy_pt_ll = torch.tensor(dy_pt_ll, dtype=torch.float)[:, None]
 dy_weights = torch.tensor(dy_weights, dtype=torch.float)[:, None]
-dataset = torch.utils.data.TensorDataset(dy_pt_ll, dy_weights)
-data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)  # noqa: E501
-
-# TODO : fix data_loader
+data_loader = InMemoryDataLoader([dy_pt_ll, dy_weights], batch_size=2048, shuffle=True)  # noqa: E501
 
 # loop over batches
+dropped_lr = False
 for epoch in range(n_epochs):
-    for i, (inputs_pt_ll, weights) in enumerate(data_loader):
-        inputs_pt_ll = dy_pt_ll
-        weights = dy_weights
+    for dy_pt_ll_batch, dy_weights_batch in data_loader:
+        # reset gradients
         optimizer.zero_grad()
 
-        # normalize inputs
-        inputs = (inputs_pt_ll - inputs_pt_ll.mean()) / inputs_pt_ll.std()
+        # scale inputs
+        inputs = (dy_pt_ll_batch - dy_pt_ll_batch.mean()) / dy_pt_ll_batch.std()  # noqa: E501
 
         # get dy weight predictions from the model
         pred_correction = model(inputs)
-        _, batched_pred_correction_binned = bin_data(inputs_pt_ll, pred_correction)  # noqa: E501
-        _, batched_weights_binned = bin_data(inputs_pt_ll, weights)
+        _, batched_pred_correction_binned = bin_data(dy_pt_ll_batch, pred_correction)  # noqa: E501
+        _, batched_weights_binned = bin_data(dy_pt_ll_batch, dy_weights_batch)
 
         # update event weights with predicted correction
         updated_weights = [x*y for x, y in zip(batched_pred_correction_binned, batched_weights_binned)]  # noqa: E501
-        pred_dy_yield = [x.sum() * (len(dy_pt_ll) / len(inputs_pt_ll)) for x in updated_weights]  # noqa: E501
+
+        # calculate predicted dy yields in each bin, accounting for batch size
+        pred_dy_yield = [x.sum() * (len(dy_pt_ll) / len(dy_pt_ll_batch)) for x in updated_weights]  # noqa: E501
         pred_dy_yield = torch.stack(pred_dy_yield)[:, None]
+
+        # get loss
         loss = torch.sum(loss_fn(pred_dy_yield/expected_dy_yield, torch.tensor(1.0)) * bin_importance[:, None], dim=0) / torch.sum(bin_importance)  # noqa: E501
 
-        # do backpropagation and optimization step
+        # backpropagation and optimization steps
         loss.backward()
         optimizer.step()
 
     print(f"---- Epoch {epoch + 1}/{n_epochs} : Loss = {loss.item():.6f}, mean = {pred_correction.mean().item():.6f}, std = {pred_correction.std().item():.6f}")  # noqa: E501
 
+    if (dropped_lr is False) and (loss.item() <= lr_threshold):
+        learn_rate = lr * 0.5  # decrease learning for later epochs
+        dropped_lr = True
+        print(f"-> Learning rate decreased from {lr} to {learn_rate}!")
+
+    if loss.item() <= loss_target:
+        print("-> Early stopping criterion met. Stopping training. ")
+        break
+
 print("\n---------------- Training completed -----------------")
 print("\nFinal ratios pred_dy_yield / expected_dy_yield :")
 print(pred_dy_yield/expected_dy_yield)
 
-inputs = (dy_pt_ll - dy_pt_ll.mean()) / dy_pt_ll.std()
-pred_correction = model(inputs).squeeze(1)
-_, _, _, _, dy_mask, _ = filter_events_by_channel(
-    variable_list["ll_pt"][0],
-    variable_list["ll_pt"][1],
-    variable_list["ll_pt"][2],
-    5,
-    return_masks=True,
-)
-final_weights = variable_list["event_weight"][1]
-final_weights[dy_mask] = final_weights[dy_mask] * pred_correction.detach().cpu().numpy().flatten()
-plot_function(ll_pt, "nn_weights_ll_pt", dy_weights=final_weights)
-plot_function(ll_mass, "nn_weights_ll_mass", dy_weights=final_weights)
-plot_function(ll_eta, "nn_weights_ll_eta", dy_weights=final_weights)
-plot_function(bb_pt, "nn_weights_bb_pt", dy_weights=final_weights)
-plot_function(bb_mass, "nn_weights_bb_mass", dy_weights=final_weights)
-plot_function(bb_eta, "nn_weights_bb_eta", dy_weights=final_weights)
-plot_function(jet1_pt, "nn_weights_jet1_pt", dy_weights=final_weights)
+# inputs = (dy_pt_ll - dy_pt_ll.mean()) / dy_pt_ll.std()
+# pred_correction = model(inputs).squeeze(1)
+# _, _, _, _, dy_mask, _ = filter_events_by_channel(
+#     variable_list["ll_pt"][0],
+#     variable_list["ll_pt"][1],
+#     variable_list["ll_pt"][2],
+#     5,
+#     return_masks=True,
+# )
+# final_weights = variable_list["event_weight"][1]
+# final_weights[dy_mask] = final_weights[dy_mask] * pred_correction.detach().cpu().numpy().flatten()
+# plot_function(ll_pt, "nn_weights_ll_pt", dy_weights=final_weights)
+# plot_function(ll_mass, "nn_weights_ll_mass", dy_weights=final_weights)
+# plot_function(ll_eta, "nn_weights_ll_eta", dy_weights=final_weights)
+# plot_function(bb_pt, "nn_weights_bb_pt", dy_weights=final_weights)
+# plot_function(bb_mass, "nn_weights_bb_mass", dy_weights=final_weights)
+# plot_function(bb_eta, "nn_weights_bb_eta", dy_weights=final_weights)
+# plot_function(jet1_pt, "nn_weights_jet1_pt", dy_weights=final_weights)
