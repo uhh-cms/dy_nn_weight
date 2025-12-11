@@ -59,6 +59,7 @@ jet1_pt = config_inst.variables.n.jet1_pt
 
 met_pt = config_inst.variables.n.met_pt
 met_phi = config_inst.variables.n.met_phi
+n_btag_pnet = config_inst.variables.n.nbjets_pnet
 
 
 # get processes
@@ -159,7 +160,7 @@ def hist_function(var_instance, data, weights):
 
 
 def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None, filter_events: bool = True, channel_id = None):  # noqa: E501
-    var_name = var_instance.name.replace("dilep", "ll").replace("dibjet", "bb").replace("njets", "n_jet")  # noqa: E501
+    var_name = var_instance.name.replace("dilep", "ll").replace("dibjet", "bb").replace("njets", "n_jet").replace("nbjets", "n_btag")  # noqa: E501
 
     # get variable arrays and original event weights from files
     data_arr, dy_arr, mc_arr = variable_list[var_name]
@@ -201,20 +202,6 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
 
     plt.savefig(f"plot_{file_version}.pdf")
 
-# --------------------------------------------------------------------------------------------------
-# BINNING AND DATA PREPARATION FOR TRAINING
-
-channel_id = 5  # 4: ee channel, 5: mumu channel
-
-# define bins and bin function
-
-pt_ll_bin_tupples = [(i * 10, (i + 1) * 10) for i in range(20)]
-pt_ll_bin_tupples[-1] = (190, np.inf) # overwrite last bin to consider overflow
-
-n_jet_bin_tupples = [(i, i + 1) for i in range(2, 6)]
-n_jet_bin_tupples[-1] = (5, np.inf) # overwrite last bin to consider overflow
-
-
 def bin_data(array_to_bin, weight_to_bin, bin_tupples):
     # turn the arrays [...] into a list of arrays [[...] , [...], ...] of len(list)) = len(bins)
     # where the first array in the list only contains the events that should fall in the first pt_ll bin, etc.
@@ -230,11 +217,37 @@ def bin_data(array_to_bin, weight_to_bin, bin_tupples):
     return binned_arrays, binned_weights
 
 
+# --------------------------------------------------------------------------------------------------
+# BINNING AND DATA PREPARATION FOR TRAINING
+
+channel_id = 5  # 4: ee channel, 5: mumu channel
+
+# define bins for input variables
+
+pt_ll_bin_tupples = [(i * 10, (i + 1) * 10) for i in range(20)]
+pt_ll_bin_tupples[-1] = (190, np.inf) # overwrite last bin to consider overflow
+
+n_jet_bin_tupples = [(i, i + 1) for i in range(2, 6)]
+n_jet_bin_tupples[-1] = (5, np.inf) 
+
+n_btag_pnet_bin_tupples = [(i, i + 1) for i in range(2, 6)]
+n_btag_pnet_bin_tupples[-1] = (5, np.inf) 
+
+bb_mass_bin_tupples = [(i * 20, (i + 1) * 20) for i in range(15)]
+bb_mass_bin_tupples[-1] = (90, np.inf) 
+
+bb_pt_bin_tupples = [(i * 10, (i + 1) * 10) for i in range(20)]
+bb_pt_bin_tupples[-1] = (190, np.inf) 
+
+
+
 # read n_jet, pt_ll and event weights from files
 data_n_jet, dy_n_jet, mc_n_jet = filter_events_by_channel(*variable_list["n_jet"], channel_id)
 data_pt_ll, dy_pt_ll, mc_pt_ll = filter_events_by_channel(*variable_list["ll_pt"], channel_id)
+data_n_btag_pnet, dy_n_btag_pnet, mc_n_btag_pnet = filter_events_by_channel(*variable_list["n_btag_pnet"], channel_id)
+data_bb_mass, dy_bb_mass, mc_bb_mass = filter_events_by_channel(*variable_list["bb_mass"], channel_id)
+data_bb_pt, dy_bb_pt, mc_bb_pt = filter_events_by_channel(*variable_list["bb_pt"], channel_id)
 data_weights, dy_weights, mc_weights = filter_events_by_channel(*variable_list["event_weight"], channel_id)
-
 
 # bin the event weights arrays over pt_ll bins
 _, data_binned_in_pt_ll_weights = bin_data(data_pt_ll, data_weights, pt_ll_bin_tupples)
@@ -246,6 +259,24 @@ _, data_binned_in_n_jet_weights = bin_data(data_n_jet, data_weights, n_jet_bin_t
 _, dy_binned_in_n_jet_weights = bin_data(dy_n_jet, dy_weights, n_jet_bin_tupples)
 _, mc_binned_in_n_jet_weights = bin_data(mc_n_jet, mc_weights, n_jet_bin_tupples)
 
+# bin the event weights arrays over n_btag_pnet bins
+_, data_binned_in_n_btag_pnet_weights = bin_data(data_n_btag_pnet, data_weights, n_btag_pnet_bin_tupples)
+_, dy_binned_in_n_btag_pnet_weights = bin_data(dy_n_btag_pnet, dy_weights, n_btag_pnet_bin_tupples)
+_, mc_binned_in_n_btag_pnet_weights = bin_data(mc_n_btag_pnet, mc_weights, n_btag_pnet_bin_tupples)
+
+# bin the event weights arrays over bb_mass bins
+_, data_binned_in_bb_mass_weights = bin_data(data_bb_mass, data_weights, bb_mass_bin_tupples)
+_, dy_binned_in_bb_mass_weights = bin_data(dy_bb_mass, dy_weights, bb_mass_bin_tupples)
+_, mc_binned_in_bb_mass_weights = bin_data(mc_bb_mass, mc_weights, bb_mass_bin_tupples)
+
+# bin the event weights arrays over bb_pt bins
+_, data_binned_in_bb_pt_weights = bin_data(data_bb_pt, data_weights, bb_pt_bin_tupples)
+_, dy_binned_in_bb_pt_weights = bin_data(dy_bb_pt, dy_weights, bb_pt_bin_tupples)
+_, mc_binned_in_bb_pt_weights = bin_data(mc_bb_pt, mc_weights, bb_pt_bin_tupples)
+
+
+
+
 # number of expected DY events in each pt_ll bin by doing Data-MC
 expected_dy_pt_ll_yield = []
 for i in range(len(pt_ll_bin_tupples)):
@@ -253,7 +284,7 @@ for i in range(len(pt_ll_bin_tupples)):
     n_mc = np.sum(mc_binned_in_pt_ll_weights[i])
     n_dy_expected = n_data - n_mc
     expected_dy_pt_ll_yield.append(n_dy_expected)
-
+expected_dy_pt_ll_yield = torch.tensor(expected_dy_pt_ll_yield, dtype=torch.float32)[:, None]
 print(f'Expected DY events per pt_ll bin: {expected_dy_pt_ll_yield}')
 
 # number of actual DY events in each pt_ll bin
@@ -261,40 +292,109 @@ actual_dy_pt_ll_yield = []
 for i in range(len(pt_ll_bin_tupples)):
     n_dy_actual = np.sum(dy_binned_in_pt_ll_weights[i])
     actual_dy_pt_ll_yield.append(n_dy_actual)
-
+actual_dy_pt_ll_yield = torch.tensor(actual_dy_pt_ll_yield, dtype=torch.float32)[:, None]
 print(f'Actual DY events per pt_ll bin: {actual_dy_pt_ll_yield}')
+print("------------------------------------------------")
 
-# number of expected DY events in each pt_ll bin by doing Data-MC
 expected_dy_n_jet_yield = []
 for i in range(len(n_jet_bin_tupples)):
     n_data = np.sum(data_binned_in_n_jet_weights[i])
     n_mc = np.sum(mc_binned_in_n_jet_weights[i])
     n_dy_expected = n_data - n_mc
     expected_dy_n_jet_yield.append(n_dy_expected)
-
+expected_dy_n_jet_yield = torch.tensor(expected_dy_n_jet_yield, dtype=torch.float32)[:, None]
 print(f'Expected DY events per n_jet bin: {expected_dy_n_jet_yield}')
 
-# number of actual DY events in each n_jet bin
 actual_dy_n_jet_yield = []
 for i in range(len(n_jet_bin_tupples)):
     n_dy_actual = np.sum(dy_binned_in_n_jet_weights[i])
     actual_dy_n_jet_yield.append(n_dy_actual)  
-
+actual_dy_n_jet_yield = torch.tensor(actual_dy_n_jet_yield, dtype=torch.float32)[:, None]
 print(f'Actual DY events per n_jet bin: {actual_dy_n_jet_yield}')
+print("------------------------------------------------")
 
+expected_dy_n_btag_pnet_yield = []
+for i in range(len(n_btag_pnet_bin_tupples)):
+    n_data = np.sum(data_binned_in_n_btag_pnet_weights[i])
+    n_mc = np.sum(mc_binned_in_n_btag_pnet_weights[i])
+    n_dy_expected = n_data - n_mc
+    expected_dy_n_btag_pnet_yield.append(n_dy_expected) 
+expected_dy_n_btag_pnet_yield = torch.tensor(expected_dy_n_btag_pnet_yield, dtype=torch.float32)[:, None]
+print(f'Expected DY events per n_btag_pnet bin: {expected_dy_n_btag_pnet_yield}')
 
-# calculate pt_ll bin importance for loss weighting
+actual_dy_n_btag_pnet_yield = []
+for i in range(len(n_btag_pnet_bin_tupples)):
+    n_dy_actual = np.sum(dy_binned_in_n_btag_pnet_weights[i])
+    actual_dy_n_btag_pnet_yield.append(n_dy_actual)  
+actual_dy_n_btag_pnet_yield = torch.tensor(actual_dy_n_btag_pnet_yield, dtype=torch.float32)[:, None]
+print(f'Actual DY events per n_btag_pnet bin: {actual_dy_n_btag_pnet_yield}')
+print("------------------------------------------------")
+
+expected_dy_bb_mass_yield = []
+for i in range(len(bb_mass_bin_tupples)):
+    n_data = np.sum(data_binned_in_bb_mass_weights[i])
+    n_mc = np.sum(mc_binned_in_bb_mass_weights[i])
+    n_dy_expected = n_data - n_mc
+    expected_dy_bb_mass_yield.append(n_dy_expected) 
+expected_dy_bb_mass_yield = torch.tensor(expected_dy_bb_mass_yield, dtype=torch.float32)[:, None]
+print(f'Expected DY events per bb_mass bin: {expected_dy_bb_mass_yield}')
+
+actual_dy_bb_mass_yield = []
+for i in range(len(bb_mass_bin_tupples)):
+    n_dy_actual = np.sum(dy_binned_in_bb_mass_weights[i])
+    actual_dy_bb_mass_yield.append(n_dy_actual) 
+actual_dy_bb_mass_yield = torch.tensor(actual_dy_bb_mass_yield, dtype=torch.float32)[:, None] 
+print(f'Actual DY events per bb_mass bin: {actual_dy_bb_mass_yield}')
+print("------------------------------------------------")
+
+expected_dy_bb_pt_yield = []
+for i in range(len(bb_pt_bin_tupples)):
+    n_data = np.sum(data_binned_in_bb_pt_weights[i])
+    n_mc = np.sum(mc_binned_in_bb_pt_weights[i])
+    n_dy_expected = n_data - n_mc
+    expected_dy_bb_pt_yield.append(n_dy_expected) 
+expected_dy_bb_pt_yield = torch.tensor(expected_dy_bb_pt_yield, dtype=torch.float32)[:, None]
+print(f'Expected DY events per bb_pt bin: {expected_dy_bb_pt_yield}')
+
+actual_dy_bb_pt_yield = []
+for i in range(len(bb_pt_bin_tupples)):
+    n_dy_actual = np.sum(dy_binned_in_bb_pt_weights[i])
+    actual_dy_bb_pt_yield.append(n_dy_actual)  
+actual_dy_bb_pt_yield = torch.tensor(actual_dy_bb_pt_yield, dtype=torch.float32)[:, None]
+print(f'Actual DY events per bb_pt bin: {actual_dy_bb_pt_yield}')
+print("------------------------------------------------")
+
+# calculate bin importance for loss weighting
+
 pt_ll_bin_importance = [sum(data_binned_in_pt_ll_weights[i]) / sum(data_weights) for i in range(len(pt_ll_bin_tupples))]
 pt_ll_bin_importance = [imp / pt_ll_bin_importance[0] for imp in pt_ll_bin_importance] # normalize to first bin
 pt_ll_bin_importance[0] = pt_ll_bin_importance[0]*2 # increase importance of first bin
-pt_ll_bin_importance = torch.tensor(pt_ll_bin_importance, dtype=torch.float32) # convert to torch tensor
-print(f'Bin importance values: {pt_ll_bin_importance}')
+pt_ll_bin_importance = torch.tensor(pt_ll_bin_importance, dtype=torch.float32) 
+print(f'Bin importance values for pt_ll: {pt_ll_bin_importance}')
 
-# calculate n_jet bin importance for loss weighting
 n_jet_bin_importance = [sum(data_binned_in_n_jet_weights[i]) / sum(data_weights) for i in range(len(n_jet_bin_tupples))]
-n_jet_bin_importance = [imp / n_jet_bin_importance[0] for imp in n_jet_bin_importance] # normalize to first bin
-n_jet_bin_importance = torch.tensor(n_jet_bin_importance, dtype=torch.float32) # convert to torch tensor
-print(f'Bin importance values: {n_jet_bin_importance}')
+n_jet_bin_importance[0] = n_jet_bin_importance[0]*0.4 # decrease importance of first bin
+n_jet_bin_importance = [imp / n_jet_bin_importance[0] for imp in n_jet_bin_importance] 
+n_jet_bin_importance = torch.tensor(n_jet_bin_importance, dtype=torch.float32) 
+print(f'Bin importance values for n_jet: {n_jet_bin_importance}')
+
+n_btag_pnet_bin_importance = [sum(data_binned_in_n_btag_pnet_weights[i]) / sum(data_weights) for i in range(len(n_btag_pnet_bin_tupples))]
+n_btag_pnet_bin_importance[0] = n_btag_pnet_bin_importance[0]*0.4 
+n_btag_pnet_bin_importance = [imp / n_btag_pnet_bin_importance[0] for imp in n_btag_pnet_bin_importance] 
+n_btag_pnet_bin_importance = torch.tensor(n_btag_pnet_bin_importance, dtype=torch.float32) 
+print(f'Bin importance values for n_btag_pnet: {n_btag_pnet_bin_importance}')
+
+bb_mass_bin_importance = [sum(data_binned_in_bb_mass_weights[i]) / sum(data_weights) for i in range(len(bb_mass_bin_tupples))]
+bb_mass_bin_importance = [imp / bb_mass_bin_importance[0] for imp in bb_mass_bin_importance] 
+bb_mass_bin_importance = torch.tensor(bb_mass_bin_importance, dtype=torch.float32) 
+print(f'Bin importance values for bb_mass: {bb_mass_bin_importance}')
+
+bb_pt_bin_importance = [sum(data_binned_in_bb_pt_weights[i]) / sum(data_weights) for i in range(len(bb_pt_bin_tupples))]
+bb_pt_bin_importance = [imp / bb_pt_bin_importance[0] for imp in bb_pt_bin_importance] 
+bb_pt_bin_importance = torch.tensor(bb_pt_bin_importance, dtype=torch.float32) 
+print(f'Bin importance values for bb_pt: {bb_pt_bin_importance}')
+
+
 
 #-------------------------------------------------------------------------------------------------
 # DEFINE AND TRAIN THE NEURAL NETWORK
@@ -303,10 +403,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class DYReweightingNN(nn.Module):
     def __init__(self):
         super(DYReweightingNN, self).__init__()
-        self.fc1 = nn.Linear(2, 10)  # input layer to hidden layer
+        self.fc1 = nn.Linear(5, 50)  # input layer to hidden layer
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(10, 10)  # hidden layer to hidden layer
-        self.fc3 = nn.Linear(10, 1)   # hidden layer to output
+        self.fc2 = nn.Linear(50, 50)  # hidden layer to hidden layer
+        self.fc3 = nn.Linear(50, 50)  # hidden layer to hidden layer
+        self.fc4 = nn.Linear(50, 1)   # hidden layer to output
 
     def forward(self, x):
         x = self.fc1(x)
@@ -314,6 +415,8 @@ class DYReweightingNN(nn.Module):
         x = self.fc2(x)
         x = self.relu(x)
         x = self.fc3(x)
+        x = self.relu(x)
+        x = self.fc4(x)
         return x
 
 # instantiate the model
@@ -329,19 +432,22 @@ loss_fn = nn.MSELoss()  # we will do custom reduction for bin importance weighti
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
 
-# convert actual and expected dy yields to torch tensors
-actual_dy_pt_ll_yield = torch.tensor(actual_dy_pt_ll_yield, dtype=torch.float32)[:, None]
-expected_dy_pt_ll_yield = torch.tensor(expected_dy_pt_ll_yield, dtype=torch.float32)[:, None]
-actual_dy_n_jet_yield = torch.tensor(actual_dy_n_jet_yield, dtype=torch.float32)[:, None]
-expected_dy_n_jet_yield = torch.tensor(expected_dy_n_jet_yield, dtype=torch.float32)[:, None]
-
 # calculate and print original loss before training
-original_loss = 0.5*(sum(
+original_loss = 0.2*(sum(
     loss_fn(actual_dy_pt_ll_yield[i] / expected_dy_pt_ll_yield[i], torch.tensor([1.0]))* pt_ll_bin_importance[i] for i in range(len(pt_ll_bin_tupples))
     ) / torch.sum(pt_ll_bin_importance)
     + sum(
     loss_fn(actual_dy_n_jet_yield[i] / expected_dy_n_jet_yield[i], torch.tensor([1.0]))* n_jet_bin_importance[i] for i in range(len(n_jet_bin_tupples))
     ) / torch.sum(n_jet_bin_importance)
+    + sum(
+    loss_fn(actual_dy_n_btag_pnet_yield[i] / expected_dy_n_btag_pnet_yield[i], torch.tensor([1.0]))* n_btag_pnet_bin_importance[i] for i in range(len(n_btag_pnet_bin_tupples))
+    ) / torch.sum(n_btag_pnet_bin_importance)
+    + sum(
+    loss_fn(actual_dy_bb_mass_yield[i] / expected_dy_bb_mass_yield[i], torch.tensor([1.0]))* bb_mass_bin_importance[i] for i in range(len(bb_mass_bin_tupples))
+    ) / torch.sum(bb_mass_bin_importance)
+    + sum(
+    loss_fn(actual_dy_bb_pt_yield[i] / expected_dy_bb_pt_yield[i], torch.tensor([1.0]))* bb_pt_bin_importance[i] for i in range(len(bb_pt_bin_tupples))
+    ) / torch.sum(bb_pt_bin_importance)
 )
 print(f'Loss before training: {original_loss.item():.6f}')
 
@@ -350,16 +456,24 @@ print(f'Loss before training: {original_loss.item():.6f}')
 n_epochs = 600
 
 # convert numpy/awkard arrays into torch tensors
-
 dy_binned_in_pt_ll_weights = [torch.tensor(arr, dtype=torch.float32) for arr in dy_binned_in_pt_ll_weights]
 dy_binned_in_n_jet_weights = [torch.tensor(arr, dtype=torch.float32) for arr in dy_binned_in_n_jet_weights]
+dy_binned_in_n_btag_pnet_weights = [torch.tensor(arr, dtype=torch.float32) for arr in dy_binned_in_n_btag_pnet_weights]
+dy_binned_in_bb_mass_weights = [torch.tensor(arr, dtype=torch.float32) for arr in dy_binned_in_bb_mass_weights]
+dy_binned_in_bb_pt_weights = [torch.tensor(arr, dtype=torch.float32) for arr in dy_binned_in_bb_pt_weights]
 dy_pt_ll = torch.tensor(dy_pt_ll, dtype=torch.float32)[:, None]
 dy_n_jet = torch.tensor(dy_n_jet, dtype=torch.float32)[:, None]
+dy_n_btag_pnet = torch.tensor(dy_n_btag_pnet, dtype=torch.float32)[:, None]
+dy_bb_mass = torch.tensor(dy_bb_mass, dtype=torch.float32)[:, None]
+dy_bb_pt = torch.tensor(dy_bb_pt, dtype=torch.float32)[:, None]
 
 pt_ll_inputs = (dy_pt_ll - dy_pt_ll.mean()) / dy_pt_ll.std()
 n_jet_inputs = (dy_n_jet - dy_n_jet.mean()) / dy_n_jet.std()
+n_btag_pnet_inputs = (dy_n_btag_pnet - dy_n_btag_pnet.mean()) / dy_n_btag_pnet.std()
+bb_mass_inputs = (dy_bb_mass - dy_bb_mass.mean()) / dy_bb_mass.std()
+bb_pt_inputs = (dy_bb_pt - dy_bb_pt.mean()) / dy_bb_pt.std()
 inputs = torch.cat(
-    (pt_ll_inputs, n_jet_inputs), 
+    (pt_ll_inputs, n_jet_inputs, n_btag_pnet_inputs, bb_mass_inputs, bb_pt_inputs), 
     dim=1
 )
 
@@ -369,14 +483,22 @@ for epoch in range(n_epochs):
     optimizer.zero_grad()
 
     pred_correction = model(inputs)
+
     _, pred_correction_binned_in_pt_ll = bin_data(dy_pt_ll, pred_correction, pt_ll_bin_tupples)
-    pred_correction_binned_in_pt_ll = [torch.tensor(arr, dtype=torch.float32) for arr in pred_correction_binned_in_pt_ll]
     updated_weights = [x*y for x,y in zip(pred_correction_binned_in_pt_ll, dy_binned_in_pt_ll_weights)]
     pred_dy_pt_ll_yield = [x.sum() for x in updated_weights] 
     _, pred_correction_binned_in_n_jet = bin_data(dy_n_jet, pred_correction, n_jet_bin_tupples)
-    pred_correction_binned_in_n_jet = [torch.tensor(arr, dtype=torch.float32) for arr in pred_correction_binned_in_n_jet]
     updated_weights = [x*y for x,y in zip(pred_correction_binned_in_n_jet, dy_binned_in_n_jet_weights)]
     pred_dy_n_jet_yield = [x.sum() for x in updated_weights]
+    _, pred_correction_binned_in_n_btag_pnet = bin_data(dy_n_btag_pnet, pred_correction, n_btag_pnet_bin_tupples)
+    updated_weights = [x*y for x,y in zip(pred_correction_binned_in_n_btag_pnet, dy_binned_in_n_btag_pnet_weights)]
+    pred_dy_n_btag_pnet_yield = [x.sum() for x in updated_weights]
+    _, pred_correction_binned_in_bb_mass = bin_data(dy_bb_mass, pred_correction, bb_mass_bin_tupples)
+    updated_weights = [x*y for x,y in zip(pred_correction_binned_in_bb_mass, dy_binned_in_bb_mass_weights)]
+    pred_dy_bb_mass_yield = [x.sum() for x in updated_weights]
+    _, pred_correction_binned_in_bb_pt = bin_data(dy_bb_pt, pred_correction, bb_pt_bin_tupples)
+    updated_weights = [x*y for x,y in zip(pred_correction_binned_in_bb_pt, dy_binned_in_bb_pt_weights)]
+    pred_dy_bb_pt_yield = [x.sum() for x in updated_weights]
 
     # define loss = (loss_bin1 + loss_bin2 + ...)/sum(bin_importance)
     loss_pt_ll = sum(
@@ -385,7 +507,17 @@ for epoch in range(n_epochs):
     loss_n_jet = sum(
         loss_fn(pred_dy_n_jet_yield[i] / expected_dy_n_jet_yield[i], torch.tensor([1.0]))* n_jet_bin_importance[i] for i in range(len(n_jet_bin_tupples))
         ) / torch.sum(n_jet_bin_importance)
-    loss = 0.5*(loss_pt_ll + loss_n_jet)
+    loss_n_btag_pnet = sum(
+        loss_fn(pred_dy_n_btag_pnet_yield[i] / expected_dy_n_btag_pnet_yield[i], torch.tensor([1.0]))* n_btag_pnet_bin_importance[i] for i in range(len(n_btag_pnet_bin_tupples))
+        ) / torch.sum(n_btag_pnet_bin_importance)
+    loss_bb_mass = sum(
+        loss_fn(pred_dy_bb_mass_yield[i] / expected_dy_bb_mass_yield[i], torch.tensor([1.0]))* bb_mass_bin_importance[i] for i in range(len(bb_mass_bin_tupples))
+        ) / torch.sum(bb_mass_bin_importance)
+    loss_bb_pt = sum(
+        loss_fn(pred_dy_bb_pt_yield[i] / expected_dy_bb_pt_yield[i], torch.tensor([1.0]))* bb_pt_bin_importance[i] for i in range(len(bb_pt_bin_tupples))
+        ) / torch.sum(bb_pt_bin_importance)
+    loss = 0.5*(loss_pt_ll + loss_n_jet + loss_n_btag_pnet + loss_bb_mass + loss_bb_pt)
+
     # do backpropagation and optimization step
     loss.backward()
     optimizer.step()
