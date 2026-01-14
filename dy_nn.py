@@ -303,7 +303,7 @@ _, dy_n_jet, _ = filter_events_by_channel(*variable_list["n_jet"], channel_id)
 _, dy_n_btag_pnet, _ = filter_events_by_channel(*variable_list["n_btag_pnet"], channel_id)
 _, dy_bb_pt, _ = filter_events_by_channel(*variable_list["bb_pt"], channel_id) 
 _, dy_bb_mass, _ = filter_events_by_channel(*variable_list["bb_mass"], channel_id)
-data_weights, dy_weights, mc_weights = filter_events_by_channel(*variable_list["event_weight"], channel_id) 
+_, dy_weights, _ = filter_events_by_channel(*variable_list["event_weight"], channel_id) 
 
 expected_dy_yield_ll_pt, actual_dy_yield_ll_pt = calculate_dy_yield("ll_pt", ll_pt_bin_tupples)
 expected_dy_yield_n_jet, actual_dy_yield_n_jet = calculate_dy_yield("n_jet", n_jet_bin_tupples)
@@ -322,23 +322,33 @@ bin_importance_bb_mass = calculate_bin_importance(expected_dy_yield_bb_mass, bb_
 
 bin_importance_n_btag_pnet[0] = bin_importance_n_btag_pnet[0]*0.4 
 bin_importance_n_jet[0] = bin_importance_n_jet[0]*0.4  # decrease importance of first n_jet bin
-bin_importance_ll_pt[0] = bin_importance_ll_pt[0]*2  # increase importance of first ll_pt bin
+bin_importance_ll_pt[0] = bin_importance_ll_pt[0]*2.0  # increase importance of first ll_pt bin
 
 # ----------------------------------------------------------------------------------
 # SETUP for the NN
 class DYReweightingNN(nn.Module):
     def __init__(self):
         super(DYReweightingNN, self).__init__()
-        self.fc1 = nn.Linear(5, 10)  # input layer to hidden layer
-        self.bn1 = nn.BatchNorm1d(10)
+        self.fc1 = nn.Linear(5, 10)   # input layer to hidden layer
+        self.bn1 = nn.BatchNorm1d(10) # normalize inputs to hidden layer for more efficient training
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(10, 1)  # hidden layer to output layer
+        self.fc2 = nn.Linear(10, 10)  # hidden layer to hidden layer
+        self.bn2 = nn.BatchNorm1d(10)
+        self.fc3 = nn.Linear(10, 10)  # hidden layer to hidden layer
+        self.bn3 = nn.BatchNorm1d(10)  
+        self.fc4 = nn.Linear(10, 1)   # hidden layer to output
 
     def forward(self, x):
         x = self.fc1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.fc2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+        x = self.fc3(x)
+        x = self.bn3(x)
+        x = self.relu(x)
+        x = self.fc4(x)
         return x
 
 device = torch.device("cpu")
@@ -348,13 +358,14 @@ lr_threshold = 0.04
 loss_fn = nn.MSELoss(reduction='none')
 loss_target = 0.01
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-batch_size = 2048
-n_epochs = 200
+batch_size = 16384
+n_epochs = 10
 
 def calculate_loss(predicted, expected, bin_importance):
-            return sum(
-                loss_fn(predicted[i] / expected[i], torch.tensor([1.0])) * bin_importance[i] for i in range(len(predicted))
-            ) / torch.sum(bin_importance)
+            ratios = predicted.flatten() / expected.flatten()
+            return torch.sum(
+                loss_fn(ratios, torch.ones_like(ratios)) * bin_importance.flatten()
+            ) / torch.sum(bin_importance.flatten())
 
 original_loss_ll_pt = calculate_loss(actual_dy_yield_ll_pt, expected_dy_yield_ll_pt, bin_importance_ll_pt)
 original_loss_n_jet = calculate_loss(actual_dy_yield_n_jet, expected_dy_yield_n_jet, bin_importance_n_jet)
@@ -406,7 +417,7 @@ for epoch in range(n_epochs):
     for dy_ll_pt_batch, dy_n_jet_batch, dy_n_btag_pnet_batch, dy_bb_pt_batch, dy_bb_mass_batch, dy_weights_batch in data_loader:
         # reset gradients
         optimizer.zero_grad()
-
+        
         # input normalization
         ll_pt_inputs = (dy_ll_pt_batch - dy_ll_pt_mean) / dy_ll_pt_std 
         n_jet_inputs = (dy_n_jet_batch - dy_n_jet_mean) / dy_n_jet_std  
@@ -414,7 +425,7 @@ for epoch in range(n_epochs):
         bb_pt_inputs = (dy_bb_pt_batch - dy_bb_pt_mean) / dy_bb_pt_std  
         bb_mass_inputs = (dy_bb_mass_batch - dy_bb_mass_mean) / dy_bb_mass_std  
         inputs = torch.cat((ll_pt_inputs, n_jet_inputs, n_btag_pnet_inputs, bb_pt_inputs, bb_mass_inputs), dim=1) 
-
+        
         # get dy weight predictions from the model
         pred_correction = model(inputs)
 
@@ -426,7 +437,7 @@ for epoch in range(n_epochs):
         pred_dy_yield_n_btag_pnet = get_batch_yields(dy_n_btag_pnet_batch, updated_weights_batch, n_btag_pnet_bin_tupples, len(dy_n_btag_pnet))  # noqa: E501
         pred_dy_yield_bb_mass = get_batch_yields(dy_bb_mass_batch, updated_weights_batch, bb_mass_bin_tupples, len(dy_bb_mass))  # noqa: E501
         pred_dy_yield_bb_pt = get_batch_yields(dy_bb_pt_batch, updated_weights_batch, bb_pt_bin_tupples, len(dy_bb_pt))  # noqa
-
+        
         loss_ll_pt = calculate_loss(pred_dy_yield_ll_pt, expected_dy_yield_ll_pt, bin_importance_ll_pt)
         loss_n_jet = calculate_loss(pred_dy_yield_n_jet, expected_dy_yield_n_jet, bin_importance_n_jet)
         loss_n_btag_pnet = calculate_loss(pred_dy_yield_n_btag_pnet, expected_dy_yield_n_btag_pnet, bin_importance_n_btag_pnet)
@@ -481,7 +492,16 @@ with torch.no_grad():
     inputs = torch.cat((ll_pt_inputs, n_jet_inputs, n_btag_pnet_inputs, bb_pt_inputs, bb_mass_inputs), dim=1)
     pred_correction = model(inputs).squeeze(1)
 
-final_weights = dy_weights.flatten() * pred_correction.detach().cpu().numpy().flatten()
+_, _, _, _, dy_mask, _ = filter_events_by_channel(
+    variable_list["ll_pt"][0],
+    variable_list["ll_pt"][1],
+    variable_list["ll_pt"][2],
+    channel_id,
+    return_masks=True,
+)
+final_weights = variable_list["event_weight"][1].copy()
+final_weights[dy_mask] = final_weights[dy_mask] * pred_correction.detach().cpu().numpy().flatten()
+#final_weights = dy_weights.flatten() * pred_correction.detach().cpu().numpy().flatten()
 
 plot_function(bb_eta, "nn_with_batching_weights_bb_eta", dy_weights=final_weights)
 plot_function(bb_mass, "nn_with_batching_weights_bb_mass", dy_weights=final_weights)
