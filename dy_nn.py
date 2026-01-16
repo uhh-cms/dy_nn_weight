@@ -311,6 +311,7 @@ expected_dy_yield_n_btag_pnet, actual_dy_yield_n_btag_pnet = calculate_dy_yield(
 expected_dy_yield_bb_pt, actual_dy_yield_bb_pt = calculate_dy_yield("bb_pt", bb_pt_bin_tupples)
 expected_dy_yield_bb_mass, actual_dy_yield_bb_mass = calculate_dy_yield("bb_mass", bb_mass_bin_tupples)
 
+
 # TODO: calculate_bin_importance now takes torch tensors as input, maybe this will be an issue later?
 # calculate bin importance for loss weighting
 # TODO: discuss other possible definitions of bin importance
@@ -329,36 +330,29 @@ bin_importance_ll_pt[0] = bin_importance_ll_pt[0]*2.0  # increase importance of 
 class DYReweightingNN(nn.Module):
     def __init__(self):
         super(DYReweightingNN, self).__init__()
-        self.fc1 = nn.Linear(5, 10)   # input layer to hidden layer
-        self.bn1 = nn.BatchNorm1d(10) # normalize inputs to hidden layer for more efficient training
+        self.fc1 = nn.Linear(5, 50)   # input layer to hidden layer
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(10, 10)  # hidden layer to hidden layer
-        self.bn2 = nn.BatchNorm1d(10)
-        self.fc3 = nn.Linear(10, 10)  # hidden layer to hidden layer
-        self.bn3 = nn.BatchNorm1d(10)  
-        self.fc4 = nn.Linear(10, 1)   # hidden layer to output
-
+        self.fc2 = nn.Linear(50, 50)  # hidden layer to hidden layer
+        self.fc3 = nn.Linear(50, 50)  # hidden layer to hidden layer
+        self.fc4 = nn.Linear(50, 1)   # hidden layer to output
     def forward(self, x):
         x = self.fc1(x)
-        x = self.bn1(x)
         x = self.relu(x)
         x = self.fc2(x)
-        x = self.bn2(x)
         x = self.relu(x)
         x = self.fc3(x)
-        x = self.bn3(x)
         x = self.relu(x)
         x = self.fc4(x)
         return x
 
 device = torch.device("cpu")
 model = DYReweightingNN().to(device)
-lr = 0.001
+lr = 0.0005
 lr_threshold = 0.04
 loss_fn = nn.MSELoss(reduction='none')
 loss_target = 0.01
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-batch_size = 16384
+batch_size = 65536
 n_epochs = 10
 
 def calculate_loss(predicted, expected, bin_importance):
@@ -381,6 +375,13 @@ original_loss = sum(
     original_loss_bb_mass]
 )
 print(f'Loss before training: {original_loss.item():.6f}\n')
+
+
+expected_dy_yield_ll_pt_per_batch = expected_dy_yield_ll_pt * (batch_size / len(dy_ll_pt))
+expected_dy_yield_n_jet_per_batch = expected_dy_yield_n_jet * (batch_size / len(dy_n_jet))
+expected_dy_yield_n_btag_pnet_per_batch = expected_dy_yield_n_btag_pnet * (batch_size / len(dy_n_btag_pnet))
+expected_dy_yield_bb_pt_per_batch = expected_dy_yield_bb_pt * (batch_size / len(dy_bb_pt))
+expected_dy_yield_bb_mass_per_batch = expected_dy_yield_bb_mass * (batch_size / len(dy_bb_mass))
 
 # prepare dataloader
 dy_ll_pt = torch.tensor(dy_ll_pt, dtype=torch.float)[:, None]
@@ -406,15 +407,15 @@ dy_n_btag_pnet_mean, dy_n_btag_pnet_std = dy_n_btag_pnet.mean(), dy_n_btag_pnet.
 dy_bb_pt_mean, dy_bb_pt_std = dy_bb_pt.mean(), dy_bb_pt.std()
 dy_bb_mass_mean, dy_bb_mass_std = dy_bb_mass.mean(), dy_bb_mass.std()
 
-def get_batch_yields(array_batch, weights_batch, bin_tupples, total_len):
-            _, weights_binned_in_var = bin_data(array_batch, weights_batch, bin_tupples)  
-            dy_yield = [x.sum() * (total_len / len(array_batch)) for x in weights_binned_in_var]  # noqa: E501
+def get_batch_yields(batch, weights_batch, bin_tupples):
+            _, weights_binned_in_var = bin_data(batch, weights_batch, bin_tupples)  
+            dy_yield = [x.sum() for x in weights_binned_in_var]  # noqa: E501
             dy_yield = torch.stack(dy_yield)[:, None]
             return dy_yield
 
 
 for epoch in range(n_epochs):
-    for dy_ll_pt_batch, dy_n_jet_batch, dy_n_btag_pnet_batch, dy_bb_pt_batch, dy_bb_mass_batch, dy_weights_batch in data_loader:
+    for batch_idx, (dy_ll_pt_batch, dy_n_jet_batch, dy_n_btag_pnet_batch, dy_bb_pt_batch, dy_bb_mass_batch, dy_weights_batch) in enumerate(data_loader):
         # reset gradients
         optimizer.zero_grad()
         
@@ -432,17 +433,16 @@ for epoch in range(n_epochs):
         # loss calculation
         updated_weights_batch = dy_weights_batch * pred_correction
 
-        pred_dy_yield_ll_pt = get_batch_yields(dy_ll_pt_batch, updated_weights_batch, ll_pt_bin_tupples, len(dy_ll_pt))  # noqa: E501
-        pred_dy_yield_n_jet = get_batch_yields(dy_n_jet_batch, updated_weights_batch, n_jet_bin_tupples, len(dy_n_jet))  # noqa: E501
-        pred_dy_yield_n_btag_pnet = get_batch_yields(dy_n_btag_pnet_batch, updated_weights_batch, n_btag_pnet_bin_tupples, len(dy_n_btag_pnet))  # noqa: E501
-        pred_dy_yield_bb_mass = get_batch_yields(dy_bb_mass_batch, updated_weights_batch, bb_mass_bin_tupples, len(dy_bb_mass))  # noqa: E501
-        pred_dy_yield_bb_pt = get_batch_yields(dy_bb_pt_batch, updated_weights_batch, bb_pt_bin_tupples, len(dy_bb_pt))  # noqa
-        
-        loss_ll_pt = calculate_loss(pred_dy_yield_ll_pt, expected_dy_yield_ll_pt, bin_importance_ll_pt)
-        loss_n_jet = calculate_loss(pred_dy_yield_n_jet, expected_dy_yield_n_jet, bin_importance_n_jet)
-        loss_n_btag_pnet = calculate_loss(pred_dy_yield_n_btag_pnet, expected_dy_yield_n_btag_pnet, bin_importance_n_btag_pnet)
-        loss_bb_mass = calculate_loss(pred_dy_yield_bb_mass, expected_dy_yield_bb_mass, bin_importance_bb_mass)
-        loss_bb_pt = calculate_loss(pred_dy_yield_bb_pt, expected_dy_yield_bb_pt, bin_importance_bb_pt)
+        pred_dy_yield_ll_pt = get_batch_yields(dy_ll_pt_batch, updated_weights_batch, ll_pt_bin_tupples)  # noqa: E501
+        pred_dy_yield_n_jet = get_batch_yields(dy_n_jet_batch, updated_weights_batch, n_jet_bin_tupples)  # noqa: E501
+        pred_dy_yield_n_btag_pnet = get_batch_yields(dy_n_btag_pnet_batch, updated_weights_batch, n_btag_pnet_bin_tupples)  # noqa: E501
+        pred_dy_yield_bb_mass = get_batch_yields(dy_bb_mass_batch, updated_weights_batch, bb_mass_bin_tupples)  # noqa: E501
+        pred_dy_yield_bb_pt = get_batch_yields(dy_bb_pt_batch, updated_weights_batch, bb_pt_bin_tupples)  # noqa
+        loss_ll_pt = calculate_loss(pred_dy_yield_ll_pt, expected_dy_yield_ll_pt_per_batch, bin_importance_ll_pt)
+        loss_n_jet = calculate_loss(pred_dy_yield_n_jet, expected_dy_yield_n_jet_per_batch, bin_importance_n_jet)
+        loss_n_btag_pnet = calculate_loss(pred_dy_yield_n_btag_pnet, expected_dy_yield_n_btag_pnet_per_batch, bin_importance_n_btag_pnet)
+        loss_bb_mass = calculate_loss(pred_dy_yield_bb_mass, expected_dy_yield_bb_mass_per_batch, bin_importance_bb_mass)
+        loss_bb_pt = calculate_loss(pred_dy_yield_bb_pt, expected_dy_yield_bb_pt_per_batch, bin_importance_bb_pt)
         
         loss = sum(
             [loss_ll_pt,
@@ -457,18 +457,29 @@ for epoch in range(n_epochs):
         loss.backward()
         optimizer.step()
 
-    print(f"---- Epoch {epoch + 1}/{n_epochs} : Loss = {loss.item():.6f}, mean = {pred_correction.mean().item():.6f}, std = {pred_correction.std().item():.6f}")  # noqa: E501
+        if (batch_idx + 1) % 10 == 0:
+            print(f"-- Epoch {epoch + 1}/{n_epochs}, "
+                  f"Step: {batch_idx + 1}, "
+                  f"Loss: {loss.item():.6f}, "
+                  f"mean = {pred_correction.mean().item():.6f}, "
+                  f"std = {pred_correction.std().item():.6f}"
+                  )
+            if (dropped_lr is False) and (loss.item() <= lr_threshold):
+                learn_rate = lr * 0.25  # decrease learning for later epochs
+                dropped_lr = True
+                print(f"-> Learning rate decreased from {lr} to {learn_rate}!")
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = learn_rate
 
-    if (dropped_lr is False) and (loss.item() <= lr_threshold):
-        learn_rate = lr * 0.5  # decrease learning for later epochs
-        dropped_lr = True
-        print(f"-> Learning rate decreased from {lr} to {learn_rate}!")
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = learn_rate
+            if loss.item() <= loss_target:
+                print("-> Early stopping criterion met. Stopping training. ")
+                break
 
-    if loss.item() <= loss_target:
-        print("-> Early stopping criterion met. Stopping training. ")
-        break
+    print(f"---- Epoch {epoch + 1}/{n_epochs} : "
+          f"Loss = {loss.item():.6f}, "
+          f"mean = {pred_correction.mean().item():.6f}, "
+          f"std = {pred_correction.std().item():.6f}"
+          )
 
 print("\n---------------- Training completed -----------------")
 # print("\nFinal ratios pred_dy_yield / expected_dy_yield :")
