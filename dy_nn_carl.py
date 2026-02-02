@@ -10,7 +10,8 @@ import math
 import torch
 from torch import nn
 from typing import Sequence, Generator
-from sklearn.model_selection import train_test_split
+from torch.utils.data import random_split
+from torch.utils.data import TensorDataset, DataLoader
 
 from modules.hbt.hbt.config.analysis_hbt import analysis_hbt
 from modules.hbt.modules.columnflow.columnflow.plotting.plot_functions_1d import plot_variable_stack  # noqa: E501
@@ -184,6 +185,43 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
 
     plt.savefig(f"plot_{file_version}.pdf")
 
+def plot_score_distribution(model, loader, file_name: str):
+    model.eval()
+    loss = 0.0
+    all_scores = []
+    all_labels = []
+    all_weights = []
+
+    with torch.no_grad():
+        for inputs, labels, weights in loader:
+            outputs = model(inputs)
+            batch_loss = torch.mean(loss_fn(outputs, labels).flatten()*weights.flatten())
+            loss += batch_loss.item()
+            # save results for analysis
+            all_scores.append(outputs)
+            all_labels.append(labels)
+            all_weights.append(weights)
+
+    all_scores = torch.cat(all_scores).numpy()
+    all_labels = torch.cat(all_labels).numpy()
+    all_weights = torch.cat(all_weights).numpy()
+
+    data_scores = all_scores[all_labels == 1]
+    dy_scores = all_scores[all_labels == 0]
+    data_weights = all_weights[all_labels == 1]
+    dy_weights = all_weights[all_labels == 0]
+
+    plt.figure(figsize=(8,6))
+    plt.hist(data_scores, bins=50, weights=data_weights, density=True, alpha=0.5, label='Data', color='blue')  # noqa: E501
+    plt.hist(dy_scores, bins=50, weights=dy_weights, density=True, alpha=0.5, label='Drell Yan', color='orange')  # noqa: E501
+    plt.xlabel('Classifier Output')
+    plt.ylabel('Normalized Events')
+    plt.title('DY Classifier Output Distribution')
+    plt.legend()
+    plt.savefig(f"classifier_output_distribution_{file_name}.pdf")
+
+    print(f"Saved DY classifier output distribution with loss = {loss/len(loader):.6f}")
+
 # --------------------------------------------------------------------------------------------------
 
 # PREPARE DATA FOR THE NN
@@ -198,42 +236,82 @@ for var in variables:
 
 
 input_variables = ["ll_pt", "n_jet", "n_btag_pnet", "bb_pt", "bb_mass"]
-data_variable = []
+data_variables = []
+dy_variables = []
+
 for var in input_variables:
-    data_var, _, _ = filter_events_by_channel(*variable_list[var], channel_id)
-    data_variable.append(torch.tensor(data_var, dtype=torch.float)[:, None])
+    data_var, dy_var, _ = filter_events_by_channel(*variable_list[var], channel_id)
+    data_variables.append(torch.tensor(data_var, dtype=torch.float)[:, None])
+    dy_variables.append(torch.tensor(dy_var, dtype=torch.float)[:, None])
 
-data_inputs = torch.cat(data_variable, dim=1)
-data_labels = torch.ones(len(data_inputs), 1)
-data_weights = torch.ones(len(data_inputs), 1)
 
-dy_variable = []
-for var in input_variables:
-    _, dy_var, _ = filter_events_by_channel(*variable_list[var], channel_id)
-    dy_variable.append(torch.tensor(dy_var, dtype=torch.float)[:, None])
-
-dy_inputs = torch.cat(dy_variable, dim=1)
+dy_inputs = torch.cat(dy_variables, dim=1)
 dy_labels = torch.zeros(len(dy_inputs), 1)
 _, dy_weights, _ = filter_events_by_channel(*variable_list["event_weight"], channel_id) 
 dy_weights = torch.tensor(dy_weights, dtype=torch.float)[:, None]
 
-all_inputs = torch.cat((data_inputs, dy_inputs), dim=0)
-all_labels = torch.cat((data_labels, dy_labels), dim=0)
-all_weights = torch.cat((data_weights, dy_weights), dim=0)
+data_inputs = torch.cat(data_variables, dim=1)
+data_labels = torch.ones(len(data_inputs), 1)
+data_weights = torch.ones(len(data_inputs), 1)
+
+# SPLIT DATA INTO TRAIN, VAL, TEST SETS
+# 70% train, 15% val, 15% test
+train_size, val_size, test_size = 0.7, 0.15, 0.15
+n_data = len(data_inputs)
+indices_data = torch.randperm(n_data)
+data_train_idx = indices_data[:int(train_size * n_data)]
+data_val_idx = indices_data[int(train_size * n_data):int((train_size + val_size) * n_data)]
+data_test_idx = indices_data[int((train_size + val_size) * n_data):]
+
+# SPLIT DY INTO TRAIN, VAL, TEST SETS
+n_dy = len(dy_inputs)
+indices_dy = torch.randperm(n_dy)
+dy_train_idx = indices_dy[:int(train_size * n_dy)]
+dy_val_idx = indices_dy[int(train_size * n_dy):int((train_size + val_size) * n_dy)]
+dy_test_idx = indices_dy[int((train_size + val_size) * n_dy):]
+
+# OVERSAMPLING DATA TO MATCH DY SIZE 
+# only for training set
+ratio = int(len(dy_inputs[dy_train_idx]) / len(data_inputs[data_train_idx]))
+data_train_inputs = data_inputs[data_train_idx].repeat((ratio, 1))
+data_train_labels = data_labels[data_train_idx].repeat((ratio, 1))
+data_train_weights = data_weights[data_train_idx].repeat((ratio, 1))
+
+# compare sum of weights
+print(f"Sum of DY weights (train): {torch.sum(dy_weights[dy_train_idx]).item():.2f}")
+print(f"Sum of Data weights (train, oversampled): {torch.sum(data_train_weights).item():.2f}")
+
+dy_normalization_factor = torch.sum(data_train_weights) / torch.sum(dy_weights[dy_train_idx])
+dy_weights[dy_train_idx] *= dy_normalization_factor
+
+
+# combine data and dy for each set
+train_inputs = torch.cat((data_train_inputs, dy_inputs[dy_train_idx]), dim=0)
+train_labels = torch.cat((data_train_labels, dy_labels[dy_train_idx]), dim=0)
+train_weights = torch.cat((data_train_weights, dy_weights[dy_train_idx]), dim=0)
+
+val_inputs = torch.cat((data_inputs[data_val_idx], dy_inputs[dy_val_idx]), dim=0)
+val_labels = torch.cat((data_labels[data_val_idx], dy_labels[dy_val_idx]), dim=0)
+val_weights = torch.cat((data_weights[data_val_idx]*ratio, dy_weights[dy_val_idx]), dim=0)   
+
+test_inputs = torch.cat((data_inputs[data_test_idx], dy_inputs[dy_test_idx]), dim=0)
+test_labels = torch.cat((data_labels[data_test_idx], dy_labels[dy_test_idx]), dim=0)
+test_weights = torch.cat((data_weights[data_test_idx]*ratio, dy_weights[dy_test_idx]), dim=0)
 
 # NORMALIZE INPUTS
 # calculate mean and std for each input feature
-input_means = torch.mean(all_inputs, dim=0)
-input_stds = torch.std(all_inputs, dim=0)
-all_inputs_norm = (all_inputs - input_means) / (input_stds + 1e-8) # avoid division by zero
+input_means = torch.mean(train_inputs, dim=0)
+input_stds = torch.std(train_inputs, dim=0)
+train_inputs = (train_inputs - input_means) / (input_stds + 1e-8) # avoid division by zero
+val_inputs = (val_inputs - input_means) / (input_stds + 1e-8)
+test_inputs = (test_inputs - input_means) / (input_stds + 1e-8)
 
-# SPLIT DATA INTO TRAIN, VAL, TEST SETS
-# 60% train, 20% val, 20% test
-train_val_inputs, test_inputs, train_val_labels, test_labels, train_val_weights, test_weights = train_test_split(  # noqa: E501
-    all_inputs_norm, all_labels, all_weights, test_size=0.2, shuffle=True, random_state=42)
+# wrap in dataset
+train_dataset = TensorDataset(train_inputs, train_labels, train_weights)
+val_dataset = TensorDataset(val_inputs, val_labels, val_weights)
+test_dataset = TensorDataset(test_inputs, test_labels, test_weights)
 
-train_inputs, val_inputs, train_labels, val_labels, train_weights, val_weights = train_test_split(  # noqa: E501
-    train_val_inputs, train_val_labels, train_val_weights, test_size=0.25, shuffle=True, random_state=42)  # 0.25 x 0.8 = 0.2 for validation
+
 # ----------------------------------------------------------------------------------
 # SETUP for the NN
 class DYClassifierNN(nn.Module):
@@ -260,59 +338,49 @@ loss_fn = nn.BCELoss(reduction='none')
 loss_target = 0.01
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 batch_size = 4096
-n_epochs = 10
-
-def calculate_loss(predicted, expected, bin_importance):
-            
-print(f'Loss before training: {original_loss.item():.6f}\n')
-
+n_epochs = 3
+dropped_lr = False
 
 # prepare dataloader
 
-data_loader = InMemoryDataLoader([dy_ll_pt, dy_n_jet, dy_n_btag_pnet, dy_bb_pt, dy_bb_mass, dy_weights], batch_size=batch_size, shuffle=True)  # noqa: E501
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
 # ----------------------------------------------------------------------------------
 
+plot_score_distribution(model, test_loader, "initial")
+
 # TRAINING LOOP
 
-
-# loop over batches
-model.train()
-dropped_lr = False
-
-
-
-
 for epoch in range(n_epochs):
-    for batch_idx, (dy_ll_pt_batch, dy_n_jet_batch, dy_n_btag_pnet_batch, dy_bb_pt_batch, dy_bb_mass_batch, dy_weights_batch) in enumerate(data_loader):
+    # --- TRAINING ---
+    model.train()
+    train_running_loss = 0.0
+    # loop over batches
+    for batch_idx, (batch_var, batch_labels, batch_weights) in enumerate(train_loader):
         # reset gradients
         optimizer.zero_grad()
         
         
         # get dy weight predictions from the model
-        pred_correction = model(inputs)
+        outputs = model(batch_var)
 
         # loss calculation
-        updated_weights_batch = dy_weights_batch * pred_correction
-
-        loss = sum(
-            [loss_ll_pt,
-            loss_n_jet,
-            loss_n_btag_pnet,
-            loss_bb_mass,
-            loss_bb_pt]
-        )
+        loss = torch.mean(loss_fn(outputs, batch_labels).flatten()*batch_weights.flatten())
 
         # backpropagation and optimization steps
         loss.backward()
         optimizer.step()
 
+        train_running_loss += loss.item()
+
         if (batch_idx + 1) % 10 == 0:
             print(f"-- Epoch {epoch + 1}/{n_epochs}, "
                   f"Step: {batch_idx + 1}, "
                   f"Loss: {loss.item():.6f}, "
-                  f"mean = {pred_correction.mean().item():.6f}, "
-                  f"std = {pred_correction.std().item():.6f}"
+                  f"mean = {outputs.mean().item():.6f}, "
+                  f"std = {outputs.std().item():.6f}"
                   )
             if (dropped_lr is False) and (loss.item() <= lr_threshold):
                 learn_rate = lr * 0.25  # decrease learning for later epochs
@@ -322,45 +390,33 @@ for epoch in range(n_epochs):
                     param_group['lr'] = learn_rate
 
             if loss.item() <= loss_target:
-                print("-> Early stopping criterion met. Stopping training. ")
+                print("-> Early stopping criterion met. Stopping training.")
                 break
 
-    print(f"---- Epoch {epoch + 1}/{n_epochs} : "
-          f"Loss = {loss.item():.6f}, "
-          f"mean = {pred_correction.mean().item():.6f}, "
-          f"std = {pred_correction.std().item():.6f}"
-          )
+    
+    # --- VALIDATION ---
+    model.eval()
+    val_loss = 0.0
+    with torch.no_grad():
+        for val_var, val_labels, val_weights in val_loader:
+            val_outputs = model(val_var)
+            batch_loss = torch.mean(loss_fn(val_outputs, val_labels).flatten()*val_weights.flatten())
+            val_loss += batch_loss.item()
 
+    avg_train_loss = train_running_loss / len(train_loader)
+    avg_val_loss = val_loss / len(val_loader)
+
+    print(f"---- Epoch {epoch + 1}/{n_epochs} : ")
+    print(f"Average Training Loss = {avg_train_loss:.6f}")
+    print(f"Average Validation Loss = {avg_val_loss:.6f}\n")
+    
 print("\n---------------- Training completed -----------------")
 
 # ----------------------------------------------------------------------------------
 
-# PLOTTING RESULTS
+# EVALUATION ON TEST SET
 
-model.eval()
-with torch.no_grad():
-    pred_correction = model(inputs).squeeze(1)
+plot_score_distribution(model, test_loader, "final")
 
-_, _, _, _, dy_mask, _ = filter_events_by_channel(
-    variable_list["ll_pt"][0],
-    variable_list["ll_pt"][1],
-    variable_list["ll_pt"][2],
-    channel_id,
-    return_masks=True,
-)
-final_weights = variable_list["event_weight"][1].copy()
-final_weights[dy_mask] = final_weights[dy_mask] * pred_correction.detach().cpu().numpy().flatten()
-#final_weights = dy_weights.flatten() * pred_correction.detach().cpu().numpy().flatten()
 
-plot_function(bb_eta, "nn_with_batching_weights_bb_eta", dy_weights=final_weights)
-plot_function(bb_mass, "nn_with_batching_weights_bb_mass", dy_weights=final_weights)
-plot_function(bb_phi, "nn_with_batching_weights_bb_phi", dy_weights=final_weights)
-plot_function(bb_pt, "nn_with_batching_weights_bb_pt", dy_weights=final_weights)
-plot_function(jet1_pt, "nn_with_batching_weights_jet1_pt", dy_weights=final_weights)
-plot_function(ll_eta, "nn_with_batching_weights_ll_eta", dy_weights=final_weights)
-plot_function(ll_mass, "nn_with_batching_weights_ll_mass", dy_weights=final_weights)
-plot_function(ll_phi, "nn_with_batching_weights_ll_phi", dy_weights=final_weights)
-plot_function(ll_pt, "nn_with_batching_weights_ll_pt", dy_weights=final_weights)
-plot_function(n_btag_pnet, "nn_with_batching_weights_n_btag_pnet", dy_weights=final_weights)
-plot_function(n_jet, "nn_with_batching_weights_n_jet", dy_weights=final_weights)
 
