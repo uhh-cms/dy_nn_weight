@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import awkward as ak
@@ -10,7 +10,6 @@ import math
 import torch
 from torch import nn
 from typing import Sequence, Generator
-from torch.utils.data import random_split
 from torch.utils.data import TensorDataset, DataLoader
 
 from modules.hbt.hbt.config.analysis_hbt import analysis_hbt
@@ -195,7 +194,7 @@ def plot_score_distribution(model, loader, file_name: str):
     with torch.no_grad():
         for inputs, labels, weights in loader:
             outputs = model(inputs)
-            batch_loss = torch.mean(loss_fn(outputs, labels).flatten()*weights.flatten())
+            batch_loss = nn.functional.binary_cross_entropy(outputs, labels.float(), weight=weights)
             loss += batch_loss.item()
             # save results for analysis
             all_scores.append(outputs)
@@ -277,12 +276,12 @@ data_train_inputs = data_inputs[data_train_idx].repeat((ratio, 1))
 data_train_labels = data_labels[data_train_idx].repeat((ratio, 1))
 data_train_weights = data_weights[data_train_idx].repeat((ratio, 1))
 
+dy_normalization_factor = torch.sum(data_train_weights) / torch.sum(dy_weights[dy_train_idx])
+dy_weights[dy_train_idx] *= dy_normalization_factor
+
 # compare sum of weights
 print(f"Sum of DY weights (train): {torch.sum(dy_weights[dy_train_idx]).item():.2f}")
 print(f"Sum of Data weights (train, oversampled): {torch.sum(data_train_weights).item():.2f}")
-
-dy_normalization_factor = torch.sum(data_train_weights) / torch.sum(dy_weights[dy_train_idx])
-dy_weights[dy_train_idx] *= dy_normalization_factor
 
 
 # combine data and dy for each set
@@ -306,39 +305,74 @@ train_inputs = (train_inputs - input_means) / (input_stds + 1e-8) # avoid divisi
 val_inputs = (val_inputs - input_means) / (input_stds + 1e-8)
 test_inputs = (test_inputs - input_means) / (input_stds + 1e-8)
 
+# ------------------------------------------------------------------------------------------
+# DIAGNOSTIC PRINTS
+
+
+print("Input feature means:", input_means)
+print("Input feature stds:", input_stds)
+
+print(f"Dy weights (train): {dy_weights[dy_train_idx]}")
+print(f"Dy weights sum (train): {torch.sum(dy_weights[dy_train_idx])}, count: {len(dy_weights[dy_train_idx])}")
+print(f"Data weights (train, oversampled): {data_train_weights}")
+print(f"Data weights sum (train, oversampled): {torch.sum(data_train_weights)}, count: {len(data_train_weights)}")
+
 # wrap in dataset
 train_dataset = TensorDataset(train_inputs, train_labels, train_weights)
 val_dataset = TensorDataset(val_inputs, val_labels, val_weights)
 test_dataset = TensorDataset(test_inputs, test_labels, test_weights)
 
+# limit training dataset size for faster training during testing
+total_subset_size = 1000
+if len(train_dataset) > total_subset_size:
+    indices = torch.randperm(len(train_dataset))[:total_subset_size]
+    train_dataset = torch.utils.data.Subset(train_dataset, indices)
+
+# check sizes and sum of weights
+print(f"Training set size: {len(train_dataset)}")
+all_labels = train_dataset.dataset.tensors[1][train_dataset.indices]
+all_weights = train_dataset.dataset.tensors[2][train_dataset.indices]
+train_dy_weights = all_weights[all_labels == 0]
+train_data_weights = all_weights[all_labels == 1]
+print(f"  DY weights sum (train): {torch.sum(train_dy_weights).item():.2f}, count: {len(train_dy_weights)}")
+print(f"  Data weights sum (train): {torch.sum(train_data_weights).item():.2f}, count: {len(train_data_weights)}")
 
 # ----------------------------------------------------------------------------------
 # SETUP for the NN
+# use a simple feedforward NN with 5-50-50-1 architecture, ReLu activation
 class DYClassifierNN(nn.Module):
     def __init__(self):
         super(DYClassifierNN, self).__init__()
-        self.fc1 = nn.Linear(5, 50)   # input layer to hidden layer
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(50, 50)  # hidden layer to hidden layer
-        self.fc3 = nn.Linear(50, 1)   # hidden layer to output
+        self.fc1 = nn.Linear(5, 128)   # input layer to hidden layer
+        self.bn1 = nn.BatchNorm1d(128)
+        self.relu = nn.LeakyReLU(0.1)
+        self.fc2 = nn.Linear(128, 64)  # hidden layer to hidden layer
+        self.bn2 = nn.BatchNorm1d(64)
+        self.fc3 = nn.Linear(64, 64)  # hidden layer to hidden layer
+        self.bn3 = nn.BatchNorm1d(64)
+        self.fc4 = nn.Linear(64, 1)   # hidden layer to output
         self.sigmoid = nn.Sigmoid()
     def forward(self, x):
         x = self.fc1(x)
+        x = self.bn1(x)
         x = self.relu(x)
         x = self.fc2(x)
+        x = self.bn2(x)
         x = self.relu(x)
         x = self.fc3(x)
+        x = self.bn3(x)
+        x = self.relu(x)
+        x = self.fc4(x)
         x = self.sigmoid(x)
         return x
 
 model = DYClassifierNN()
-lr = 0.0005
-lr_threshold = 0.04
-loss_fn = nn.BCELoss(reduction='none')
+lr = 0.005
+lr_threshold = 0.5
 loss_target = 0.01
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-batch_size = 4096
-n_epochs = 3
+batch_size = 30
+n_epochs = 15
 dropped_lr = False
 
 # prepare dataloader
@@ -357,6 +391,7 @@ for epoch in range(n_epochs):
     # --- TRAINING ---
     model.train()
     train_running_loss = 0.0
+    train_running_accuracy = 0.0
     # loop over batches
     for batch_idx, (batch_var, batch_labels, batch_weights) in enumerate(train_loader):
         # reset gradients
@@ -367,18 +402,24 @@ for epoch in range(n_epochs):
         outputs = model(batch_var)
 
         # loss calculation
-        loss = torch.mean(loss_fn(outputs, batch_labels).flatten()*batch_weights.flatten())
+        loss = nn.functional.binary_cross_entropy(outputs, batch_labels.float(), weight=batch_weights)
 
         # backpropagation and optimization steps
         loss.backward()
         optimizer.step()
 
-        train_running_loss += loss.item()
+        pred = outputs.detach() > 0.5
+        correct = (pred == batch_labels).sum().item()
+        accuracy = correct / len(batch_labels)
 
-        if (batch_idx + 1) % 10 == 0:
+        train_running_loss += loss.item()
+        train_running_accuracy += accuracy
+            
+        if (batch_idx + 1) % 5 == 0:
             print(f"-- Epoch {epoch + 1}/{n_epochs}, "
                   f"Step: {batch_idx + 1}, "
                   f"Loss: {loss.item():.6f}, "
+                  f"Accuracy: {accuracy:.2%}, "
                   f"mean = {outputs.mean().item():.6f}, "
                   f"std = {outputs.std().item():.6f}"
                   )
@@ -389,26 +430,33 @@ for epoch in range(n_epochs):
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = learn_rate
 
-            if loss.item() <= loss_target:
-                print("-> Early stopping criterion met. Stopping training.")
-                break
+        #if loss.item() <= loss_target:
+        #    print("-> Early stopping criterion met. Stopping training.")
+        #    break
 
     
     # --- VALIDATION ---
     model.eval()
     val_loss = 0.0
+    val_accuracy = 0.0
     with torch.no_grad():
         for val_var, val_labels, val_weights in val_loader:
             val_outputs = model(val_var)
-            batch_loss = torch.mean(loss_fn(val_outputs, val_labels).flatten()*val_weights.flatten())
+            batch_loss = nn.functional.binary_cross_entropy(val_outputs, val_labels.float(), weight=val_weights)
             val_loss += batch_loss.item()
 
+            pred = val_outputs.detach() > 0.5
+            correct = (pred == val_labels).sum().item()
+            val_accuracy += correct / len(val_labels)
+
     avg_train_loss = train_running_loss / len(train_loader)
+    avg_train_accuracy = train_running_accuracy / len(train_loader)
     avg_val_loss = val_loss / len(val_loader)
+    avg_val_accuracy = val_accuracy / len(val_loader)
 
     print(f"---- Epoch {epoch + 1}/{n_epochs} : ")
-    print(f"Average Training Loss = {avg_train_loss:.6f}")
-    print(f"Average Validation Loss = {avg_val_loss:.6f}\n")
+    print(f"Average Training Loss = {avg_train_loss:.6f}, Average Accuracy = {avg_train_accuracy:.2%}")
+    print(f"Average Validation Loss = {avg_val_loss:.6f}, Average Accuracy = {avg_val_accuracy:.2%}\n")
     
 print("\n---------------- Training completed -----------------")
 
