@@ -141,7 +141,7 @@ def hist_function(var_instance, data, weights):
     fill_hist(h, {var_instance.name: data, "weight": weights})
     return h
 
-def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None, filter_events: bool = True):  # noqa: E501
+def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None, filter_events: bool = True, channel_id=None):  # noqa: E501
     var_name = var_instance.name.replace("dilep", "ll").replace("dibjet", "bb").replace("njets", "n_jet").replace("nbjets", "n_btag")
 
     # get variable arrays and original event weights from files
@@ -150,10 +150,10 @@ def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None,
 
     # use original DY weights if none are provided
     if dy_weights is None:
-        print("--> Using original DY event weights!")
+        print(f"Saved {var_name} plot --> Using original DY event weights!")
         dy_weights = dy_weights_original
     else:
-        print("--> Using updated DY event weights!")
+        print(f"Saved {var_name} plot --> Using updated DY event weights!")
         dy_weights = dy_weights
 
     # filter arrays considering mumu channel id and DY region cuts
@@ -189,30 +189,25 @@ def plot_score_distribution(model, loader, file_name: str):
     loss = 0.0
     all_scores = []
     all_labels = []
-    all_weights = []
 
     with torch.no_grad():
-        for inputs, labels, weights in loader:
+        for inputs, labels in loader:
             outputs = model(inputs)
-            batch_loss = nn.functional.binary_cross_entropy(outputs, labels.float(), weight=weights)
+            batch_loss = nn.functional.binary_cross_entropy(outputs, labels.float())
             loss += batch_loss.item()
             # save results for analysis
             all_scores.append(outputs)
             all_labels.append(labels)
-            all_weights.append(weights)
 
     all_scores = torch.cat(all_scores).numpy()
     all_labels = torch.cat(all_labels).numpy()
-    all_weights = torch.cat(all_weights).numpy()
 
     data_scores = all_scores[all_labels == 1]
     dy_scores = all_scores[all_labels == 0]
-    data_weights = all_weights[all_labels == 1]
-    dy_weights = all_weights[all_labels == 0]
 
     plt.figure(figsize=(8,6))
-    plt.hist(data_scores, bins=50, weights=data_weights, density=True, alpha=0.5, label='Data', color='blue')  # noqa: E501
-    plt.hist(dy_scores, bins=50, weights=dy_weights, density=True, alpha=0.5, label='Drell Yan', color='orange')  # noqa: E501
+    plt.hist(data_scores, bins=50, density=True, alpha=0.5, label='Data', color='blue')  # noqa: E501
+    plt.hist(dy_scores, bins=50, density=True, alpha=0.5, label='Drell Yan', color='orange')  # noqa: E501
     plt.xlabel('Classifier Output')
     plt.ylabel('Normalized Events')
     plt.title('DY Classifier Output Distribution')
@@ -246,16 +241,13 @@ for var in input_variables:
 
 dy_inputs = torch.cat(dy_variables, dim=1)
 dy_labels = torch.zeros(len(dy_inputs), 1)
-_, dy_weights, _ = filter_events_by_channel(*variable_list["event_weight"], channel_id) 
-dy_weights = torch.tensor(dy_weights, dtype=torch.float)[:, None]
 
 data_inputs = torch.cat(data_variables, dim=1)
 data_labels = torch.ones(len(data_inputs), 1)
-data_weights = torch.ones(len(data_inputs), 1)
 
 # SPLIT DATA INTO TRAIN, VAL, TEST SETS
 # 70% train, 15% val, 15% test
-train_size, val_size, test_size = 0.7, 0.15, 0.15
+train_size, val_size = 0.7, 0.15
 n_data = len(data_inputs)
 indices_data = torch.randperm(n_data)
 data_train_idx = indices_data[:int(train_size * n_data)]
@@ -274,28 +266,16 @@ dy_test_idx = indices_dy[int((train_size + val_size) * n_dy):]
 ratio = int(len(dy_inputs[dy_train_idx]) / len(data_inputs[data_train_idx]))
 data_train_inputs = data_inputs[data_train_idx].repeat((ratio, 1))
 data_train_labels = data_labels[data_train_idx].repeat((ratio, 1))
-data_train_weights = data_weights[data_train_idx].repeat((ratio, 1))
-
-dy_normalization_factor = torch.sum(data_train_weights) / torch.sum(dy_weights[dy_train_idx])
-dy_weights[dy_train_idx] *= dy_normalization_factor
-
-# compare sum of weights
-print(f"Sum of DY weights (train): {torch.sum(dy_weights[dy_train_idx]).item():.2f}")
-print(f"Sum of Data weights (train, oversampled): {torch.sum(data_train_weights).item():.2f}")
-
 
 # combine data and dy for each set
 train_inputs = torch.cat((data_train_inputs, dy_inputs[dy_train_idx]), dim=0)
 train_labels = torch.cat((data_train_labels, dy_labels[dy_train_idx]), dim=0)
-train_weights = torch.cat((data_train_weights, dy_weights[dy_train_idx]), dim=0)
 
 val_inputs = torch.cat((data_inputs[data_val_idx], dy_inputs[dy_val_idx]), dim=0)
-val_labels = torch.cat((data_labels[data_val_idx], dy_labels[dy_val_idx]), dim=0)
-val_weights = torch.cat((data_weights[data_val_idx]*ratio, dy_weights[dy_val_idx]), dim=0)   
+val_labels = torch.cat((data_labels[data_val_idx], dy_labels[dy_val_idx]), dim=0)  
 
 test_inputs = torch.cat((data_inputs[data_test_idx], dy_inputs[dy_test_idx]), dim=0)
 test_labels = torch.cat((data_labels[data_test_idx], dy_labels[dy_test_idx]), dim=0)
-test_weights = torch.cat((data_weights[data_test_idx]*ratio, dy_weights[dy_test_idx]), dim=0)
 
 # NORMALIZE INPUTS
 # calculate mean and std for each input feature
@@ -304,6 +284,7 @@ input_stds = torch.std(train_inputs, dim=0)
 train_inputs = (train_inputs - input_means) / (input_stds + 1e-8) # avoid division by zero
 val_inputs = (val_inputs - input_means) / (input_stds + 1e-8)
 test_inputs = (test_inputs - input_means) / (input_stds + 1e-8)
+dy_inputs = (dy_inputs - input_means) / (input_stds + 1e-8)
 
 # ------------------------------------------------------------------------------------------
 # DIAGNOSTIC PRINTS
@@ -312,30 +293,19 @@ test_inputs = (test_inputs - input_means) / (input_stds + 1e-8)
 print("Input feature means:", input_means)
 print("Input feature stds:", input_stds)
 
-print(f"Dy weights (train): {dy_weights[dy_train_idx]}")
-print(f"Dy weights sum (train): {torch.sum(dy_weights[dy_train_idx])}, count: {len(dy_weights[dy_train_idx])}")
-print(f"Data weights (train, oversampled): {data_train_weights}")
-print(f"Data weights sum (train, oversampled): {torch.sum(data_train_weights)}, count: {len(data_train_weights)}")
 
 # wrap in dataset
-train_dataset = TensorDataset(train_inputs, train_labels, train_weights)
-val_dataset = TensorDataset(val_inputs, val_labels, val_weights)
-test_dataset = TensorDataset(test_inputs, test_labels, test_weights)
+train_dataset = TensorDataset(train_inputs, train_labels)
+val_dataset = TensorDataset(val_inputs, val_labels)
+test_dataset = TensorDataset(test_inputs, test_labels)
+dy_dataset = TensorDataset(dy_inputs)
 
 # limit training dataset size for faster training during testing
-total_subset_size = 1000
+total_subset_size = 10000
 if len(train_dataset) > total_subset_size:
     indices = torch.randperm(len(train_dataset))[:total_subset_size]
     train_dataset = torch.utils.data.Subset(train_dataset, indices)
 
-# check sizes and sum of weights
-print(f"Training set size: {len(train_dataset)}")
-all_labels = train_dataset.dataset.tensors[1][train_dataset.indices]
-all_weights = train_dataset.dataset.tensors[2][train_dataset.indices]
-train_dy_weights = all_weights[all_labels == 0]
-train_data_weights = all_weights[all_labels == 1]
-print(f"  DY weights sum (train): {torch.sum(train_dy_weights).item():.2f}, count: {len(train_dy_weights)}")
-print(f"  Data weights sum (train): {torch.sum(train_data_weights).item():.2f}, count: {len(train_data_weights)}")
 
 # ----------------------------------------------------------------------------------
 # SETUP for the NN
@@ -344,23 +314,23 @@ class DYClassifierNN(nn.Module):
     def __init__(self):
         super(DYClassifierNN, self).__init__()
         self.fc1 = nn.Linear(5, 128)   # input layer to hidden layer
-        self.bn1 = nn.BatchNorm1d(128)
+        #self.bn1 = nn.BatchNorm1d(128)
         self.relu = nn.LeakyReLU(0.1)
         self.fc2 = nn.Linear(128, 64)  # hidden layer to hidden layer
-        self.bn2 = nn.BatchNorm1d(64)
+        #self.bn2 = nn.BatchNorm1d(64)
         self.fc3 = nn.Linear(64, 64)  # hidden layer to hidden layer
-        self.bn3 = nn.BatchNorm1d(64)
+        #self.bn3 = nn.BatchNorm1d(64)
         self.fc4 = nn.Linear(64, 1)   # hidden layer to output
         self.sigmoid = nn.Sigmoid()
     def forward(self, x):
         x = self.fc1(x)
-        x = self.bn1(x)
+        #x = self.bn1(x)
         x = self.relu(x)
         x = self.fc2(x)
-        x = self.bn2(x)
+        #x = self.bn2(x)
         x = self.relu(x)
         x = self.fc3(x)
-        x = self.bn3(x)
+        #x = self.bn3(x)
         x = self.relu(x)
         x = self.fc4(x)
         x = self.sigmoid(x)
@@ -371,7 +341,7 @@ lr = 0.005
 lr_threshold = 0.5
 loss_target = 0.01
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-batch_size = 30
+batch_size = 300
 n_epochs = 15
 dropped_lr = False
 
@@ -380,7 +350,7 @@ dropped_lr = False
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
+full_loader = DataLoader(dy_dataset, batch_size=16384, shuffle=False)
 # ----------------------------------------------------------------------------------
 
 plot_score_distribution(model, test_loader, "initial")
@@ -393,16 +363,15 @@ for epoch in range(n_epochs):
     train_running_loss = 0.0
     train_running_accuracy = 0.0
     # loop over batches
-    for batch_idx, (batch_var, batch_labels, batch_weights) in enumerate(train_loader):
+    for batch_idx, (batch_var, batch_labels) in enumerate(train_loader):
         # reset gradients
         optimizer.zero_grad()
         
-        
-        # get dy weight predictions from the model
+        # get predictions from the model
         outputs = model(batch_var)
 
         # loss calculation
-        loss = nn.functional.binary_cross_entropy(outputs, batch_labels.float(), weight=batch_weights)
+        loss = nn.functional.binary_cross_entropy(outputs, batch_labels.float())
 
         # backpropagation and optimization steps
         loss.backward()
@@ -440,9 +409,9 @@ for epoch in range(n_epochs):
     val_loss = 0.0
     val_accuracy = 0.0
     with torch.no_grad():
-        for val_var, val_labels, val_weights in val_loader:
+        for val_var, val_labels in val_loader:
             val_outputs = model(val_var)
-            batch_loss = nn.functional.binary_cross_entropy(val_outputs, val_labels.float(), weight=val_weights)
+            batch_loss = nn.functional.binary_cross_entropy(val_outputs, val_labels.float())
             val_loss += batch_loss.item()
 
             pred = val_outputs.detach() > 0.5
@@ -466,5 +435,39 @@ print("\n---------------- Training completed -----------------")
 
 plot_score_distribution(model, test_loader, "final")
 
+# UPDATE DY EVENT WEIGHTS BASED ON NN OUTPUT
 
+model.eval()
+new_dy_weights_filtered = []
+with torch.no_grad():
+    for batch in full_loader:
+        dy_inputs = batch[0]
+        dy_outputs = model(dy_inputs)
+        # calculate new weights as w = D / (1 - D)
+        weights = dy_outputs / (1 - dy_outputs + 1e-8)  # avoid division by zero
+        new_dy_weights_filtered.append(weights)
 
+# compare sum of data weights and new dy weights
+data_event_weights, _, _, _, dy_mask, _ = filter_events_by_channel(*variable_list["event_weight"], channel_id, return_masks=True)  # noqa: E501
+total_data_weight = np.sum(data_event_weights)
+new_dy_weights_filtered = torch.cat(new_dy_weights_filtered).numpy().flatten()
+total_dy_weight = np.sum(new_dy_weights_filtered)
+print(f"Average new DY event weight: {np.mean(new_dy_weights_filtered):.6f}")
+scaling_factor = total_data_weight / total_dy_weight
+new_dy_weights_filtered = new_dy_weights_filtered * scaling_factor
+new_dy_weights = variable_list["event_weight"][1].copy()
+new_dy_weights[dy_mask] = new_dy_weights_filtered
+
+plot_function(ll_pt, "carl_weights_ll_pt", dy_weights=new_dy_weights, channel_id=channel_id)
+plot_function(ll_mass, "carl_weights_ll_mass", dy_weights=new_dy_weights, channel_id=channel_id)
+plot_function(ll_eta, "carl_weights_ll_eta", dy_weights=new_dy_weights, channel_id=channel_id)
+plot_function(ll_phi, "carl_weights_ll_phi", dy_weights=new_dy_weights, channel_id=channel_id)
+
+plot_function(bb_pt, "carl_weights_bb_pt", dy_weights=new_dy_weights, channel_id=channel_id)
+plot_function(bb_mass, "carl_weights_bb_mass", dy_weights=new_dy_weights, channel_id=channel_id)
+plot_function(bb_eta, "carl_weights_bb_eta", dy_weights=new_dy_weights, channel_id=channel_id)
+plot_function(bb_phi, "carl_weights_bb_phi", dy_weights=new_dy_weights, channel_id=channel_id)
+
+plot_function(jet1_pt, "carl_weights_jet1_pt", dy_weights=new_dy_weights, channel_id=channel_id)
+plot_function(n_jet, "carl_weights_n_jet", dy_weights=new_dy_weights, channel_id=channel_id)
+plot_function(n_btag_pnet, "carl_weights_n_btag_pnet", dy_weights=new_dy_weights, channel_id=channel_id)
