@@ -27,7 +27,7 @@ example_file = "w_lnu_1j_pt100to200_amcatnlo.parquet"
 fullpath = f"{mypath}{example_file}"
 example_array = ak.from_parquet(fullpath)
 variables = example_array.fields
-# print(variables)
+print(variables)
 
 # load DY weight corrections from json file
 dy_file = "/afs/desy.de/user/a/alvesand/public/dy_corrections.json.gz"
@@ -301,15 +301,15 @@ test_dataset = TensorDataset(test_inputs, test_labels)
 dy_dataset = TensorDataset(dy_inputs)
 
 # limit training dataset size for faster training during testing
-total_subset_size = 10000
-if len(train_dataset) > total_subset_size:
-    indices = torch.randperm(len(train_dataset))[:total_subset_size]
-    train_dataset = torch.utils.data.Subset(train_dataset, indices)
+# total_subset_size = 10000
+# if len(train_dataset) > total_subset_size:
+#     indices = torch.randperm(len(train_dataset))[:total_subset_size]
+#     train_dataset = torch.utils.data.Subset(train_dataset, indices)
 
 
 # ----------------------------------------------------------------------------------
 # SETUP for the NN
-# use a simple feedforward NN with 5-50-50-1 architecture, ReLu activation
+# use a simple feedforward NN with 5-128-64-64-1 architecture, LeakyReLu activation
 class DYClassifierNN(nn.Module):
     def __init__(self):
         super(DYClassifierNN, self).__init__()
@@ -341,8 +341,8 @@ lr = 0.005
 lr_threshold = 0.5
 loss_target = 0.01
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-batch_size = 300
-n_epochs = 15
+batch_size = 4096
+n_epochs = 20
 dropped_lr = False
 
 # prepare dataloader
@@ -384,7 +384,7 @@ for epoch in range(n_epochs):
         train_running_loss += loss.item()
         train_running_accuracy += accuracy
             
-        if (batch_idx + 1) % 5 == 0:
+        if (batch_idx + 1) % 100 == 0:
             print(f"-- Epoch {epoch + 1}/{n_epochs}, "
                   f"Step: {batch_idx + 1}, "
                   f"Loss: {loss.item():.6f}, "
@@ -429,6 +429,9 @@ for epoch in range(n_epochs):
     
 print("\n---------------- Training completed -----------------")
 
+torch.save(model.state_dict(), "dy_classifier_weights.pth")
+print("Model weights saved to dy_classifier_weights.pth")
+
 # ----------------------------------------------------------------------------------
 
 # EVALUATION ON TEST SET
@@ -448,12 +451,12 @@ with torch.no_grad():
         new_dy_weights_filtered.append(weights)
 
 # compare sum of data weights and new dy weights
-data_event_weights, _, _, _, dy_mask, _ = filter_events_by_channel(*variable_list["event_weight"], channel_id, return_masks=True)  # noqa: E501
-total_data_weight = np.sum(data_event_weights)
+data_event_weights, _, mc_event_weights, _, dy_mask, _ = filter_events_by_channel(*variable_list["event_weight"], channel_id, return_masks=True)  # noqa: E501
+total_data_mc_weight = np.sum(data_event_weights) + np.sum(mc_event_weights)
 new_dy_weights_filtered = torch.cat(new_dy_weights_filtered).numpy().flatten()
 total_dy_weight = np.sum(new_dy_weights_filtered)
 print(f"Average new DY event weight: {np.mean(new_dy_weights_filtered):.6f}")
-scaling_factor = total_data_weight / total_dy_weight
+scaling_factor = total_data_mc_weight / total_dy_weight
 new_dy_weights_filtered = new_dy_weights_filtered * scaling_factor
 new_dy_weights = variable_list["event_weight"][1].copy()
 new_dy_weights[dy_mask] = new_dy_weights_filtered
@@ -462,12 +465,10 @@ plot_function(ll_pt, "carl_weights_ll_pt", dy_weights=new_dy_weights, channel_id
 plot_function(ll_mass, "carl_weights_ll_mass", dy_weights=new_dy_weights, channel_id=channel_id)
 plot_function(ll_eta, "carl_weights_ll_eta", dy_weights=new_dy_weights, channel_id=channel_id)
 plot_function(ll_phi, "carl_weights_ll_phi", dy_weights=new_dy_weights, channel_id=channel_id)
-
 plot_function(bb_pt, "carl_weights_bb_pt", dy_weights=new_dy_weights, channel_id=channel_id)
 plot_function(bb_mass, "carl_weights_bb_mass", dy_weights=new_dy_weights, channel_id=channel_id)
 plot_function(bb_eta, "carl_weights_bb_eta", dy_weights=new_dy_weights, channel_id=channel_id)
 plot_function(bb_phi, "carl_weights_bb_phi", dy_weights=new_dy_weights, channel_id=channel_id)
-
 plot_function(jet1_pt, "carl_weights_jet1_pt", dy_weights=new_dy_weights, channel_id=channel_id)
 plot_function(n_jet, "carl_weights_n_jet", dy_weights=new_dy_weights, channel_id=channel_id)
 plot_function(n_btag_pnet, "carl_weights_n_btag_pnet", dy_weights=new_dy_weights, channel_id=channel_id)
