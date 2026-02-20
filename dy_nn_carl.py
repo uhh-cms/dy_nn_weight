@@ -1,20 +1,15 @@
 from __future__ import annotations
-import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import awkward as ak
 import order as od
 import os
 import correctionlib
-import math
 import torch
 from torch import nn
-from typing import Sequence, Generator
 from torch.utils.data import TensorDataset, DataLoader
 
 from modules.hbt.hbt.config.analysis_hbt import analysis_hbt
-from modules.hbt.modules.columnflow.columnflow.plotting.plot_functions_1d import plot_variable_stack  # noqa: E501
-from modules.hbt.modules.columnflow.columnflow.hist_util import create_hist_from_variables, fill_hist  # noqa: E501
 
 # --------------------------------------------------------------------------------------------------
 
@@ -92,6 +87,8 @@ for file in filelist:
         else:
             temp_storage["mc"][var].append(values)
 
+print("---File Setup completed!---")
+
 # --------------------------------------------------------------------------------------------------
 
 # HELPER FUNCTIONS
@@ -135,54 +132,6 @@ def filter_events_by_channel(data_arr, dy_arr, mc_arr, desired_channel_id, retur
         return data_arr[data_mask], dy_arr[dy_mask], mc_arr[mc_mask], data_mask, dy_mask, mc_mask
     else:
         return data_arr[data_mask], dy_arr[dy_mask], mc_arr[mc_mask]
-
-def hist_function(var_instance, data, weights):
-    h = create_hist_from_variables(var_instance, weight=True)
-    fill_hist(h, {var_instance.name: data, "weight": weights})
-    return h
-
-def plot_function(var_instance: od.Variable, file_version: str, dy_weights=None, filter_events: bool = True, channel_id=None):  # noqa: E501
-    var_name = var_instance.name.replace("dilep", "ll").replace("dibjet", "bb").replace("njets", "n_jet").replace("nbjets", "n_btag")
-
-    # get variable arrays and original event weights from files
-    data_arr, dy_arr, mc_arr = variable_list[var_name]
-    data_weights, dy_weights_original, mc_weights = variable_list["event_weight"]  # noqa: E501
-
-    # use original DY weights if none are provided
-    if dy_weights is None:
-        print(f"Saved {var_name} plot --> Using original DY event weights!")
-        dy_weights = dy_weights_original
-    else:
-        print(f"Saved {var_name} plot --> Using updated DY event weights!")
-        dy_weights = dy_weights
-
-    # filter arrays considering mumu channel id and DY region cuts
-    if filter_events:
-        data_arr, dy_arr, mc_arr = filter_events_by_channel(data_arr, dy_arr, mc_arr, channel_id)  # noqa: E501
-        data_weights, dy_weights, mc_weights = filter_events_by_channel(  # noqa: E501
-            data_weights, dy_weights, mc_weights, channel_id
-        )
-
-    # update binning in histograms
-    data_hist = hist_function(var_instance, data_arr, data_weights)
-    dy_hist = hist_function(var_instance, dy_arr, dy_weights)
-    mc_hist = hist_function(var_instance, mc_arr, mc_weights)
-    hists_to_plot = {
-        dy_process: dy_hist,
-        data_process: data_hist,
-        bkg_process: mc_hist,
-    }
-
-    # create figure
-    fig, _ = plot_variable_stack(
-        hists=hists_to_plot,
-        config_inst=config_inst,
-        category_inst=config_inst.get_category("dyc"),
-        variable_insts=[var_instance,],
-        shift_insts=[config_inst.get_shift("nominal")],
-    )
-
-    plt.savefig(f"plot_{file_version}.pdf")
 
 def plot_score_distribution(model, loader, file_name: str):
     model.eval()
@@ -286,13 +235,15 @@ val_inputs = (val_inputs - input_means) / (input_stds + 1e-8)
 test_inputs = (test_inputs - input_means) / (input_stds + 1e-8)
 dy_inputs = (dy_inputs - input_means) / (input_stds + 1e-8)
 
-# ------------------------------------------------------------------------------------------
-# DIAGNOSTIC PRINTS
-
-
 print("Input feature means:", input_means)
 print("Input feature stds:", input_stds)
 
+scaling_params = {
+    "input_means": input_means,
+    "input_stds": input_stds
+}
+torch.save(scaling_params, "input_scaling_params.pth")
+print("Saved input scaling parameters to input_scaling_params.pth")
 
 # wrap in dataset
 train_dataset = TensorDataset(train_inputs, train_labels)
@@ -300,12 +251,7 @@ val_dataset = TensorDataset(val_inputs, val_labels)
 test_dataset = TensorDataset(test_inputs, test_labels)
 dy_dataset = TensorDataset(dy_inputs)
 
-# limit training dataset size for faster training during testing
-# total_subset_size = 10000
-# if len(train_dataset) > total_subset_size:
-#     indices = torch.randperm(len(train_dataset))[:total_subset_size]
-#     train_dataset = torch.utils.data.Subset(train_dataset, indices)
-
+print("---Data preparation completed!---")
 
 # ----------------------------------------------------------------------------------
 # SETUP for the NN
@@ -339,7 +285,6 @@ class DYClassifierNN(nn.Module):
 model = DYClassifierNN()
 lr = 0.005
 lr_threshold = 0.5
-loss_target = 0.01
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 batch_size = 4096
 n_epochs = 20
@@ -350,12 +295,13 @@ dropped_lr = False
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-full_loader = DataLoader(dy_dataset, batch_size=16384, shuffle=False)
 # ----------------------------------------------------------------------------------
 
 plot_score_distribution(model, test_loader, "initial")
 
 # TRAINING LOOP
+
+print("\n---------------- Starting training -----------------\n")
 
 for epoch in range(n_epochs):
     # --- TRAINING ---
@@ -399,10 +345,6 @@ for epoch in range(n_epochs):
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = learn_rate
 
-        #if loss.item() <= loss_target:
-        #    print("-> Early stopping criterion met. Stopping training.")
-        #    break
-
     
     # --- VALIDATION ---
     model.eval()
@@ -429,46 +371,7 @@ for epoch in range(n_epochs):
     
 print("\n---------------- Training completed -----------------")
 
-torch.save(model.state_dict(), "dy_classifier_weights.pth")
-print("Model weights saved to dy_classifier_weights.pth")
-
-# ----------------------------------------------------------------------------------
-
-# EVALUATION ON TEST SET
-
 plot_score_distribution(model, test_loader, "final")
 
-# UPDATE DY EVENT WEIGHTS BASED ON NN OUTPUT
-
-model.eval()
-new_dy_weights_filtered = []
-with torch.no_grad():
-    for batch in full_loader:
-        dy_inputs = batch[0]
-        dy_outputs = model(dy_inputs)
-        # calculate new weights as w = D / (1 - D)
-        weights = dy_outputs / (1 - dy_outputs + 1e-8)  # avoid division by zero
-        new_dy_weights_filtered.append(weights)
-
-# compare sum of data weights and new dy weights
-data_event_weights, _, mc_event_weights, _, dy_mask, _ = filter_events_by_channel(*variable_list["event_weight"], channel_id, return_masks=True)  # noqa: E501
-total_data_mc_weight = np.sum(data_event_weights) + np.sum(mc_event_weights)
-new_dy_weights_filtered = torch.cat(new_dy_weights_filtered).numpy().flatten()
-total_dy_weight = np.sum(new_dy_weights_filtered)
-print(f"Average new DY event weight: {np.mean(new_dy_weights_filtered):.6f}")
-scaling_factor = total_data_mc_weight / total_dy_weight
-new_dy_weights_filtered = new_dy_weights_filtered * scaling_factor
-new_dy_weights = variable_list["event_weight"][1].copy()
-new_dy_weights[dy_mask] = new_dy_weights_filtered
-
-plot_function(ll_pt, "carl_weights_ll_pt", dy_weights=new_dy_weights, channel_id=channel_id)
-plot_function(ll_mass, "carl_weights_ll_mass", dy_weights=new_dy_weights, channel_id=channel_id)
-plot_function(ll_eta, "carl_weights_ll_eta", dy_weights=new_dy_weights, channel_id=channel_id)
-plot_function(ll_phi, "carl_weights_ll_phi", dy_weights=new_dy_weights, channel_id=channel_id)
-plot_function(bb_pt, "carl_weights_bb_pt", dy_weights=new_dy_weights, channel_id=channel_id)
-plot_function(bb_mass, "carl_weights_bb_mass", dy_weights=new_dy_weights, channel_id=channel_id)
-plot_function(bb_eta, "carl_weights_bb_eta", dy_weights=new_dy_weights, channel_id=channel_id)
-plot_function(bb_phi, "carl_weights_bb_phi", dy_weights=new_dy_weights, channel_id=channel_id)
-plot_function(jet1_pt, "carl_weights_jet1_pt", dy_weights=new_dy_weights, channel_id=channel_id)
-plot_function(n_jet, "carl_weights_n_jet", dy_weights=new_dy_weights, channel_id=channel_id)
-plot_function(n_btag_pnet, "carl_weights_n_btag_pnet", dy_weights=new_dy_weights, channel_id=channel_id)
+torch.save(model.state_dict(), "dy_classifier_weights.pth")
+print("Model weights saved to dy_classifier_weights.pth")
