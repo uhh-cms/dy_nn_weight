@@ -323,7 +323,7 @@ for epoch in range(n_epochs):
         outputs = model(batch_var)
 
         # loss calculation
-        loss = nn.functional.binary_cross_entropy(outputs, batch_labels.float(), weight=batch_weights)
+        loss = nn.functional.binary_cross_entropy((outputs+0.5), batch_labels.float(), weight=batch_weights)
 
         # backpropagation and optimization steps
         loss.backward()
@@ -379,5 +379,5 @@ print("\n---------------- Training completed -----------------")
 
 plot_score_distribution(model, test_loader, "final")
 
-torch.save(model.state_dict(), "dy_classifier_weights_v2.pth")
-print("Model weights saved to dy_classifier_weights_v2.pth")
+torch.save(model.state_dict(), "dy_classifier_weights_v2+0.5.pth")
+print("Model weights saved to dy_classifier_weights_v2+0.5.pth")
